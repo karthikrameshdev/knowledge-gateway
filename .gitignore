@@ -218,3 +218,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Validation artifacts and local Postman dependency materializations
+postman/.dependencies/
+*.ndjson
+.env.*
+!.env.example

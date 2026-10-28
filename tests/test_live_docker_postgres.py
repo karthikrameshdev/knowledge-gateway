@@ -1,15 +1,18 @@
+import os
 import pytest
 from src.config import SQLConfig, SQLTableConfig
 from src.connectors.sql_connector import SQLConnector
 
 
+@pytest.mark.integration
+@pytest.mark.skipif(os.environ.get("KG_RUN_INTEGRATION") != "1", reason="Run ./test.sh --integration")
 @pytest.mark.asyncio
 async def test_live_docker_postgres_connector():
     config = SQLConfig(
         enabled=True,
         provider="postgresql",
         host="localhost",
-        port=5433,
+        port=5543,
         database="gateway_db",
         username="postgres_admin",
         password="postgres_secret",

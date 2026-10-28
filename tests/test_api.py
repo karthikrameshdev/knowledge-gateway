@@ -1,11 +1,12 @@
 import pytest
 from starlette.testclient import TestClient
-from src.server import app
+from src.server import create_app
+from src.config import load_config
 
 
 @pytest.fixture
 def client():
-    with TestClient(app) as c:
+    with TestClient(create_app(load_config("config.demo.yaml"))) as c:
         yield c
 
 

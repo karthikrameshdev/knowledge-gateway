@@ -1,0 +1,37 @@
+openapi: 3.0.3
+info:
+  title: OpenAI-compatible embedding dependency (used subset)
+  version: 1.0.0
+  description: Request/response subset from https://platform.openai.com/docs/api-reference/embeddings/create. This local simulation is not a vendor-provided mock.
+paths:
+  /v1/embeddings:
+    post:
+      operationId: createEmbedding
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [model, input]
+              properties:
+                model: {type: string}
+                input: {type: array, items: {type: string}}
+                dimensions: {type: integer, minimum: 1}
+      responses:
+        '200':
+          description: Indexed embedding vectors
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        index: {type: integer}
+                        embedding: {type: array, items: {type: number}}
+        '503':
+          description: Upstream unavailable

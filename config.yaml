@@ -1,101 +1,113 @@
 gateway:
-  name: "Knowledge Gateway"
-  version: "1.0.0"
-  host: "0.0.0.0"
+  name: Knowledge Gateway
+  version: 1.1.0
+  host: 127.0.0.1
   port: 8080
-  debug: true
+  debug: false
   pagination:
     default_page_size: 5
     max_page_size: 50
   onnx_engine:
     enabled: true
-    model_path: "models/reranker.onnx"
+    model_path: models/reranker.onnx
     score_threshold: 0.15
-    weights:
-      semantic_sim: 0.35
-      lexical_overlap: 0.20
-      title_match: 0.20
-      tag_match: 0.10
-      source_confidence: 0.15
-
-# Caching Layer (Redis with automatic In-Memory fallback, TTL, and Eviction policies)
+  demo_mode: false
+  source_timeout_seconds: 8
+  max_concurrent_queries: 16
+  queue_timeout_seconds: 0.25
 cache:
   enabled: true
-  backend: "redis" # Options: "redis" or "memory"
-  ttl_seconds: 300 # Default TTL: 5 minutes
-  eviction_policy: "lru" # Options: "lru", "lfu", "fifo"
-  max_entries: 1000 # Maximum cache capacity
+  backend: memory
+  ttl_seconds: 300
+  eviction_policy: lru
+  max_entries: 1000
   redis:
-    host: "localhost"
+    host: localhost
     port: 6379
     db: 0
-    password: ""
-    timeout_seconds: 2.0
-    key_prefix: "kg:cache:"
-
-# Connectors Configuration
-
-# 1. RAG Vector Database
+    password: ${REDIS_PASSWORD:-}
+    timeout_seconds: 0.5
+    key_prefix: 'kg:cache:'
+    retry_interval_seconds: 5.0
+  max_value_bytes: 2097152
 rag:
   enabled: true
-  provider: "qdrant"
-  host: "localhost"
+  provider: qdrant
+  host: localhost
   port: 6333
-  collection: "enterprise_knowledge_rag"
+  collection: enterprise_knowledge_rag
   top_k: 8
   embedding:
-    # OpenAI-compatible embedding endpoint configuration
-    openai_url: "https://openrouter.ai/api/v1"
-    model_id: "openai/text-embedding-3-small"
-    api_key: "${OPENROUTER_API_KEY}"
+    openai_url: https://openrouter.ai/api/v1
+    model_id: openai/text-embedding-3-small
+    api_key: ${OPENROUTER_API_KEY}
     dimension: 768
-
-# 2. OKF (Open Knowledge Format) Structured Point
+    provider: openai
+    timeout_seconds: 4
+    send_dimensions: true
+  mode: remote
+  timeout_seconds: 3
 okf:
   enabled: true
-  root_dir: "data/okf"
+  root_dir: data/okf
   deterministic_traversal: true
   top_k: 8
-
-# 3. Filesystem Source
 filesystem:
   enabled: true
   directories:
-    - path: "data/docs"
-      patterns: ["*.md", "*.txt", "*.json"]
-    - path: "data/specs"
-      patterns: ["*.md", "*.txt", "*.yaml"]
+  - path: data/docs
+    patterns:
+    - '*.md'
+    - '*.txt'
+    - '*.json'
+  - path: data/specs
+    patterns:
+    - '*.md'
+    - '*.txt'
+    - '*.yaml'
   max_results: 8
-
-# 4. Git Repository Source
 git:
   enabled: true
   repositories:
-    - name: "knowledge-gateway"
-      path: "."
-      branch: "main"
-      max_commits: 15
-      max_results: 6
-
-# 5. SQL Database (PostgreSQL / MySQL / Relational Database)
+  - name: knowledge-gateway
+    path: .
+    branch: main
+    max_commits: 15
+    max_results: 6
 sql:
   enabled: true
-  provider: "postgresql"
-  host: "localhost"
+  provider: postgresql
+  host: localhost
   port: 5433
-  database: "gateway_db"
-  username: "postgres_admin"
-  password: "postgres_secret"
+  database: gateway_db
+  username: postgres_admin
+  password: ${POSTGRES_PASSWORD:-}
   timeout_seconds: 4.0
   tables:
-    - table_name: "knowledge_articles"
-      search_columns: ["title", "content", "category", "tags"]
-      id_column: "id"
-      title_column: "title"
-      content_column: "content"
-    - table_name: "system_configs"
-      search_columns: ["config_key", "config_value", "description", "scope"]
-      id_column: "id"
-      title_column: "config_key"
-      content_column: "description"
+  - table_name: knowledge_articles
+    search_columns:
+    - title
+    - content
+    - category
+    - tags
+    id_column: id
+    title_column: title
+    content_column: content
+  - table_name: system_configs
+    search_columns:
+    - config_key
+    - config_value
+    - description
+    - scope
+    id_column: id
+    title_column: config_key
+    content_column: description
   max_results: 8
+security:
+  api_key: ${KNOWLEDGE_GATEWAY_API_KEY:-}
+  cors_origins: []
+  allowed_hosts:
+  - localhost
+  - 127.0.0.1
+  - '[::1]'
+  - testserver
