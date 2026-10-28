@@ -16,3 +16,5 @@ Input validation, authentication and full secret redaction; host/CORS restrictio
 ## Limits of the evidence
 
 The comparison with baseline duration is not a controlled performance benchmark: tests and configuration changed. Local latency is not a production SLA. Paid embedding providers, production datasets, tenant authorization, distributed invalidation under simultaneous writers, long-duration soak behavior and durable audit delivery were not verified. The bundled ONNX feature model has not been trained or evaluated as a factual-confidence estimator. See [architecture](architecture.md) for deployment boundaries.
+
+The Git connector regression uses its own temporary repository, so it verifies an explicit revision independently of shallow or detached CI checkouts.

@@ -43,11 +43,16 @@ async def test_filesystem_connector():
 
 
 @pytest.mark.asyncio
-async def test_git_connector():
+async def test_git_connector(tmp_path):
+    import subprocess
+    subprocess.run(["git", "init", "--initial-branch=main", str(tmp_path)], check=True, capture_output=True)
+    (tmp_path / "architecture.md").write_text("# Architecture\nVault design")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "-c", "user.name=Gateway Test Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "Initial commit"], cwd=tmp_path, check=True, capture_output=True)
     config = GitConfig(
         enabled=True,
         repositories=[
-            GitRepoConfig(name="test-repo", path=".", branch="main", max_commits=10)
+            GitRepoConfig(name="test-repo", path=str(tmp_path), branch="main", max_commits=10)
         ],
     )
     connector = GitConnector(config)
@@ -55,7 +60,8 @@ async def test_git_connector():
     assert health["status"] in ["healthy", "degraded"]
 
     results = await connector.search("Initial commit", tags=[])
-    assert isinstance(results, list)
+    assert any(item.provenance.get("commit_hash") for item in results)
+    await connector.aclose()
 
 
 @pytest.mark.asyncio
