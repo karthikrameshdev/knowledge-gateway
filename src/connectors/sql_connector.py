@@ -1,177 +1,119 @@
-import logging
-from typing import List, Dict, Any, Optional
-import psycopg2
+import math
+import threading
+from contextlib import contextmanager
+from typing import List
+from psycopg2 import sql
 from psycopg2.extras import RealDictCursor
-
+from psycopg2.pool import ThreadedConnectionPool
 from .base import BaseConnector
 from ..models import GatewayKnowledgeItem
 from ..config import SQLConfig
 
-logger = logging.getLogger("SQLConnector")
-
 
 class SQLConnector(BaseConnector):
-    """PostgreSQL and relational SQL database connector for enterprise stores."""
+    """Read-only PostgreSQL retrieval with bounded connections and quoted identifiers."""
 
     def __init__(self, config: SQLConfig):
-        super().__init__(name="sql_postgres_db", source_type="sql", enabled=config.enabled)
+        super().__init__('sql_postgres_db', 'sql', config.enabled)
         self.config = config
         self.is_connected = False
-        self._test_connection()
+        self._pool = None
+        self._pool_lock = threading.Lock()
 
     def _get_connection(self):
-        return psycopg2.connect(
-            host=self.config.host,
-            port=self.config.port,
-            dbname=self.config.database,
-            user=self.config.username,
-            password=self.config.password,
-            connect_timeout=int(self.config.timeout_seconds),
-        )
+        with self._pool_lock:
+            if self._pool is None:
+                self._pool = ThreadedConnectionPool(
+                    1, 4, host=self.config.host, port=self.config.port,
+                    dbname=self.config.database, user=self.config.username,
+                    password=self.config.password,
+                    connect_timeout=math.ceil(self.config.timeout_seconds),
+                    options=f'-c statement_timeout={int(self.config.timeout_seconds * 1000)} -c default_transaction_read_only=on',
+                    application_name='knowledge-gateway',
+                )
+            return self._pool.getconn()
 
-    def _test_connection(self):
-        if not self.enabled:
-            return
+    @contextmanager
+    def connection(self):
+        conn = self._get_connection()
         try:
-            conn = self._get_connection()
-            conn.close()
-            self.is_connected = True
-            logger.info("Connected to PostgreSQL at %s:%s/%s", self.config.host, self.config.port, self.config.database)
-        except Exception as e:
-            logger.warning("Could not connect to PostgreSQL at %s:%s: %s", self.config.host, self.config.port, e)
-            self.is_connected = False
+            yield conn
+        finally:
+            try:
+                if not conn.closed:
+                    conn.rollback()
+            finally:
+                self._pool.putconn(conn, close=bool(conn.closed))
 
-    async def search(
-        self,
-        query: str,
-        tags: List[str],
-        top_k: int = 5,
-    ) -> List[GatewayKnowledgeItem]:
+    async def search(self, query, tags, top_k=None):
+        return await self.run_blocking(self._search_sync, query, tags, top_k)
+
+    def _search_sync(self, query: str, tags: List[str], top_k=None):
         if not self.enabled or not self.config.tables:
             return []
-
-        q_clean = query.strip()
-        if not q_clean:
-            return []
-
-        q_words = [w for w in q_clean.split() if len(w) > 2]
-        if not q_words:
-            q_words = [q_clean]
-
-        items: List[GatewayKnowledgeItem] = []
-        limit_per_table = min(top_k or self.config.max_results, 10)
-
+        words = [w for w in query.split() if len(w) > 2] or [query.strip()]
+        words = words[:64]
+        limit = top_k or self.config.max_results
+        items = []
         try:
-            conn = self._get_connection()
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                for table_cfg in self.config.tables:
-                    # Construct safe parameterized query
-                    # WHERE (col1 ILIKE %s OR col2 ILIKE %s ...)
-                    where_clauses = []
-                    params = []
-
-                    for col in table_cfg.search_columns:
-                        for word in q_words:
-                            where_clauses.append(f"{col} ILIKE %s")
-                            params.append(f"%{word}%")
-
-                    if not where_clauses:
+            with self.connection() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+                for table in self.config.tables:
+                    clauses, params = [], []
+                    for col in table.search_columns:
+                        for word in words:
+                            clauses.append(sql.SQL('CAST({} AS TEXT) ILIKE %s').format(sql.Identifier(col)))
+                            literal = word.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+                            params.append('%' + literal + '%')
+                    if not clauses:
                         continue
-
-                    sql = f"""
-                        SELECT * FROM {table_cfg.table_name}
-                        WHERE {' OR '.join(where_clauses)}
-                        LIMIT %s;
-                    """
-                    params.append(limit_per_table)
-
-                    cur.execute(sql, tuple(params))
-                    rows = cur.fetchall()
-
-                    for row in rows:
-                        row_dict = dict(row)
-                        row_id = str(row_dict.get(table_cfg.id_column, "unknown"))
-                        title = str(row_dict.get(table_cfg.title_column, f"Record {row_id}"))
-                        content = str(row_dict.get(table_cfg.content_column, ""))
-
-                        # Fallback for composite content
-                        if not content:
-                            content = " | ".join(f"{k}: {v}" for k, v in row_dict.items() if v)
-
-                        snippet = content[:200] + ("..." if len(content) > 200 else "")
-
-                        # Calculate basic lexical match score
-                        hits = sum(1 for w in q_words if w.lower() in (title + " " + content).lower())
-                        raw_score = min(0.95, 0.50 + 0.15 * hits)
-
-                        raw_tags = row_dict.get("tags", "")
-                        parsed_tags = [t.strip() for t in raw_tags.split(",")] if isinstance(raw_tags, str) else []
-
-                        item = GatewayKnowledgeItem(
-                            id=f"sql_{table_cfg.table_name}_{row_id}",
-                            source_type="sql",
-                            title=title,
-                            content=content,
-                            snippet=snippet,
-                            raw_score=round(raw_score, 4),
-                            provenance={
-                                "connector": "sql_postgres_db",
-                                "database": self.config.database,
-                                "table": table_cfg.table_name,
-                                "row_id": row_id,
-                                "host": f"{self.config.host}:{self.config.port}",
-                            },
-                            metadata={
-                                "category": row_dict.get("category", "database_record"),
-                                "tags": parsed_tags,
-                                "columns": list(row_dict.keys()),
-                            },
-                        )
-                        items.append(item)
-
-            conn.close()
+                    statement = sql.SQL('SELECT * FROM {} WHERE {} ORDER BY {} LIMIT %s').format(
+                        sql.Identifier(*table.table_name.split('.')),
+                        sql.SQL(' OR ').join(clauses), sql.Identifier(table.id_column),
+                    )
+                    cur.execute(statement, (*params, limit))
+                    for row in cur.fetchall():
+                        row_id = str(row.get(table.id_column, 'unknown'))
+                        title = str(row.get(table.title_column, row_id))
+                        content = str(row.get(table.content_column) or '')
+                        raw_tags = row.get('tags') or []
+                        if isinstance(raw_tags, str):
+                            raw_tags = [v.strip() for v in raw_tags.split(',')]
+                        hits = sum(w.lower() in (title + ' ' + content).lower() for w in words)
+                        items.append(GatewayKnowledgeItem(
+                            id=f'sql_{table.table_name}_{row_id}', source_type='sql', title=title,
+                            content=content[:262144], snippet=content[:200],
+                            raw_score=min(0.95, 0.5 + 0.15 * hits),
+                            provenance={'connector': self.name, 'database': self.config.database,
+                                        'table': table.table_name, 'row_id': row_id},
+                            metadata={'category': row.get('category', 'database_record'), 'tags': raw_tags},
+                        ))
             self.is_connected = True
-        except Exception as e:
-            logger.debug("PostgreSQL query failed: %s", e)
+        except Exception:
             self.is_connected = False
+            raise
+        return sorted(items, key=lambda item: (-item.raw_score, item.id))[:limit]
 
-        items.sort(key=lambda x: x.raw_score, reverse=True)
-        return items[:top_k]
+    async def health_check(self):
+        return await self.run_blocking(self._health_sync)
 
-    async def health_check(self) -> Dict[str, Any]:
+    def _health_sync(self):
         if not self.enabled:
-            return {"status": "disabled", "connector": self.name}
-
+            return {'status': 'disabled', 'connector': self.name}
         try:
-            conn = self._get_connection()
-            with conn.cursor() as cur:
-                cur.execute("SELECT version();")
-                db_version = cur.fetchone()[0]
-
-                table_stats = {}
-                for t in self.config.tables:
-                    try:
-                        cur.execute(f"SELECT count(*) FROM {t.table_name};")
-                        table_stats[t.table_name] = cur.fetchone()[0]
-                    except Exception:
-                        table_stats[t.table_name] = "error"
-
-            conn.close()
+            with self.connection() as conn, conn.cursor() as cur:
+                cur.execute('SELECT 1')
+                tables = {}
+                for table in self.config.tables:
+                    # Cheap existence check: no full-table COUNT(*) on a health endpoint.
+                    cur.execute(sql.SQL('SELECT 1 FROM {} LIMIT 1').format(sql.Identifier(*table.table_name.split('.'))))
+                    tables[table.table_name] = 'available'
             self.is_connected = True
-            return {
-                "status": "healthy",
-                "connector": self.name,
-                "database": self.config.database,
-                "host": f"{self.config.host}:{self.config.port}",
-                "tables": table_stats,
-                "version": db_version[:50] + "...",
-            }
-        except Exception as e:
+            return {'status': 'healthy', 'connector': self.name, 'database': self.config.database, 'tables': tables}
+        except Exception as exc:
             self.is_connected = False
-            return {
-                "status": "unreachable",
-                "connector": self.name,
-                "database": self.config.database,
-                "host": f"{self.config.host}:{self.config.port}",
-                "error": str(e),
-            }
+            return {'status': 'unreachable', 'connector': self.name, 'error': type(exc).__name__}
+
+    async def aclose(self):
+        await super().aclose()
+        if self._pool:
+            self._pool.closeall()

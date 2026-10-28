@@ -6,7 +6,7 @@ from src.config import load_config
 
 @pytest.mark.asyncio
 async def test_end_to_end_gateway_retrieval():
-    config = load_config()
+    config = load_config("config.demo.yaml")
     gateway = KnowledgeGateway(config)
 
     # Multi-source prompt testing Enterprise, Vault, PCI compliance, Architecture

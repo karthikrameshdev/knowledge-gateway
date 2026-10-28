@@ -1,4 +1,7 @@
 import re
+import time
+import threading
+from .files import scan_files
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Set
 import yaml
@@ -50,8 +53,8 @@ class OKFConnector(BaseConnector):
         self.documents: Dict[str, OKFDocument] = {}
         self.dependents_index: Dict[str, Set[str]] = {}  # target -> set of docs depending on it
         self.governed_index: Dict[str, Set[str]] = {}    # policy -> set of docs governed by it
-        if self.enabled:
-            self._load_documents()
+        self._index_lock = threading.RLock()
+        self._loaded_at = 0.0
 
     def _load_documents(self):
         self.documents.clear()
@@ -66,7 +69,7 @@ class OKFConnector(BaseConnector):
         if not root.exists() or not root.is_dir():
             return
 
-        for p in root.rglob("*.md"):
+        for p in scan_files(root, ["*.md"], self.config.max_files, self.config.max_file_bytes):
             try:
                 content = p.read_text(encoding="utf-8")
                 match = FRONTMATTER_REGEX.match(content)
@@ -91,11 +94,17 @@ class OKFConnector(BaseConnector):
                     fm_raw = match.group(1)
                     body = match.group(2).strip()
                     meta = yaml.safe_load(fm_raw) or {}
+                    if not isinstance(meta, dict):
+                        continue
                     doc_id = str(meta.get("id") or p.stem)
                     tags = meta.get("tags") or []
                     if isinstance(tags, str):
                         tags = [tags]
+                    tags = [str(t) for t in tags if isinstance(t, (str, int))]
                     relations = meta.get("relations") or {}
+                    if not isinstance(relations, dict):
+                        relations = {}
+                    relations = {str(k): ([str(v)] if isinstance(v, str) else [str(x) for x in v] if isinstance(v, list) else []) for k, v in relations.items()}
 
                     doc = OKFDocument(
                         file_path=p,
@@ -130,11 +139,24 @@ class OKFConnector(BaseConnector):
             except Exception:
                 pass
 
-    async def search(
+    async def search(self, query, tags, top_k=None):
+        return await self.run_blocking(self._locked_search, query, tags, top_k)
+
+    async def health_check(self):
+        return await self.run_blocking(self._health_sync)
+
+    def _locked_search(self, query, tags, top_k):
+        with self._index_lock:
+            if time.monotonic() - self._loaded_at >= self.config.refresh_interval_seconds:
+                self._load_documents()
+                self._loaded_at = time.monotonic()
+            return self._search_sync(query, tags, top_k)
+
+    def _search_sync(
         self,
         query: str,
         tags: List[str],
-        top_k: int = 5,
+        top_k: int = None,
     ) -> List[GatewayKnowledgeItem]:
         if not self.enabled:
             return []
@@ -146,47 +168,34 @@ class OKFConnector(BaseConnector):
         q_lower = query.lower()
         matched_docs: List[Tuple[OKFDocument, List[str]]] = []  # (doc, traversal_path)
 
-        # 1. Deterministic Graph Traversal for Relational Queries
-        if "vault" in q_lower and ("depend" in q_lower or "service" in q_lower or "uses" in q_lower):
-            root_doc = self.documents.get("vault-secrets-engine")
-            if root_doc:
-                matched_docs.append((root_doc, ["Entity: vault-secrets-engine"]))
-            dependents = self.dependents_index.get("vault-secrets-engine", set())
-            for dep_id in dependents:
-                dep_doc = self.documents.get(dep_id)
-                if dep_doc and dep_doc not in [d[0] for d in matched_docs]:
-                    matched_docs.append((dep_doc, ["vault-secrets-engine", f"reverse depends_on -> {dep_id}"]))
-
-        if "pci" in q_lower and ("govern" in q_lower or "comply" in q_lower or "standard" in q_lower):
-            policy_doc = self.documents.get("pci-dss-compliance")
-            if policy_doc:
-                matched_docs.append((policy_doc, ["Policy: pci-dss-compliance"]))
-                applies = policy_doc.relations.get("applies_to", [])
-                for app_id in applies:
-                    app_doc = self.documents.get(app_id)
-                    if app_doc and app_doc not in [d[0] for d in matched_docs]:
-                        matched_docs.append((app_doc, ["pci-dss-compliance", f"applies_to -> {app_id}"]))
-
-        if "zero trust" in q_lower or "zero-trust" in q_lower:
-            zt_doc = self.documents.get("zero-trust-network")
-            if zt_doc:
-                matched_docs.append((zt_doc, ["Policy: zero-trust-network"]))
-                applies = zt_doc.relations.get("applies_to", [])
-                for app_id in applies:
-                    app_doc = self.documents.get(app_id)
-                    if app_doc and app_doc not in [d[0] for d in matched_docs]:
-                        matched_docs.append((app_doc, ["zero-trust-network", f"applies_to -> {app_id}"]))
-
-        if "disaster" in q_lower or "failover" in q_lower or "rto" in q_lower:
-            dr_doc = self.documents.get("disaster-recovery")
-            if dr_doc and dr_doc not in [d[0] for d in matched_docs]:
-                matched_docs.append((dr_doc, ["Runbook: disaster-recovery"]))
+        # Resolve any named entity, then follow its explicit relations. No fixture-specific names.
+        seeds = [doc for doc in self.documents.values() if doc.doc_id.lower() in q_lower or doc.title.lower() in q_lower]
+        if not seeds:
+            seeds = [doc for doc in self.documents.values() if any(str(tag).lower() in q_lower for tag in doc.tags)]
+        visited = set()
+        for doc in sorted(seeds, key=lambda d: d.doc_id):
+            if doc.doc_id in visited:
+                continue
+            visited.add(doc.doc_id)
+            matched_docs.append((doc, [f"Entity: {doc.doc_id}"]))
+            related = set()
+            if any(word in q_lower for word in ['depend', 'uses', 'service']):
+                related.update(self.dependents_index.get(doc.doc_id, set()))
+            if any(word in q_lower for word in ['govern', 'comply', 'policy', 'standard']):
+                related.update(self.governed_index.get(doc.doc_id, set()))
+            for relation in ['depends_on', 'governed_by', 'applies_to']:
+                related.update(doc.relations.get(relation, []))
+            if self.config.deterministic_traversal:
+                for related_id in sorted(related):
+                    if related_id in self.documents and related_id not in visited:
+                        visited.add(related_id)
+                        matched_docs.append((self.documents[related_id], [doc.doc_id, f"explicit relation -> {related_id}"]))
 
         # 2. Entity ID and Tag matching
         q_words = set(q_lower.split())
         query_tags = [t.lower() for t in tags]
 
-        for doc_id, doc in self.documents.items():
+        for doc_id, doc in sorted(self.documents.items()):
             if any(doc_id == m[0].doc_id for m in matched_docs):
                 continue
 
@@ -202,7 +211,7 @@ class OKFConnector(BaseConnector):
                 score_factor += len(tag_hits)
 
             # Keyword match in body
-            body_hits = sum(1 for w in q_words if w in doc.body_markdown.lower())
+            body_hits = sum(1 for w in q_words if len(w) > 2 and w in doc.body_markdown.lower())
             if body_hits > 1:
                 score_factor += 1
 
@@ -241,11 +250,14 @@ class OKFConnector(BaseConnector):
 
         return items
 
-    async def health_check(self) -> Dict[str, Any]:
+    def _health_sync(self) -> Dict[str, Any]:
         if not self.enabled:
             return {"status": "disabled", "connector": self.name}
+        with self._index_lock:
+            self._load_documents()
+            self._loaded_at = time.monotonic()
         return {
-            "status": "healthy",
+            "status": "healthy" if self.documents else "degraded",
             "connector": self.name,
             "root_dir": str(self.root_dir),
             "documents_count": len(self.documents),

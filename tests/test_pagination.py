@@ -6,7 +6,7 @@ from src.config import GatewayConfig, load_config
 
 @pytest.mark.asyncio
 async def test_deterministic_pagination():
-    config = load_config()
+    config = load_config("config.demo.yaml")
     gateway = KnowledgeGateway(config)
 
     # Issue query with page_size=2, page=1

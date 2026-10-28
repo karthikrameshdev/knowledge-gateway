@@ -1,48 +1,13 @@
 #!/usr/bin/env bash
-set -e
-
-# Setup environment PATH
-export PATH="$HOME/.docker/bin:/Applications/Docker.app/Contents/Resources/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
-
-echo "================================================================="
-echo "                   Starting Knowledge Gateway                    "
-echo "================================================================="
-
-# 1. Virtual Environment Bootstrap
-if [ ! -d ".venv" ]; then
-    echo "[+] Creating virtual environment..."
-    python3.13 -m venv .venv || python3 -m venv .venv
-    .venv/bin/pip install --upgrade pip
-    .venv/bin/pip install -r requirements.txt
+set -euo pipefail
+cd "$(dirname "$0")"
+if [ ! -d .venv ]; then
+  python3 -m venv .venv
+  .venv/bin/python -m pip install -r requirements.txt
 fi
-
-PYTHON=".venv/bin/python"
-
-# 2. Check and compile ONNX model if needed
-if [ ! -f "models/reranker.onnx" ]; then
-    echo "[+] Exporting local ONNX neural re-ranking model..."
-    $PYTHON models/export_onnx_model.py
-fi
-
-# 3. Check Docker PostgreSQL and Redis
-if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-    echo "[+] Starting Docker dependencies (PostgreSQL 5433 & Redis 6379)..."
-    docker compose -f docker-compose.test.yml up -d postgres redis >/dev/null 2>&1 || true
-fi
-
-# 4. Read port from config or environment
-PORT="${GATEWAY_PORT:-8080}"
-HOST="${GATEWAY_HOST:-0.0.0.0}"
-
-echo ""
-echo "================================================================="
-echo "  [✓] Knowledge Gateway running on http://localhost:$PORT        "
-echo "  [✓] UI Dashboard & Live Tailing: http://localhost:$PORT        "
-echo "  [✓] REST API Docs (Swagger): http://localhost:$PORT/docs       "
-echo "================================================================="
-echo ""
-
-exec .venv/bin/uvicorn src.server:app --host "$HOST" --port "$PORT" --reload
+export KNOWLEDGE_GATEWAY_CONFIG="${KNOWLEDGE_GATEWAY_CONFIG:-config.demo.yaml}"
+read -r configured_host configured_port < <(.venv/bin/python -c 'from src.config import load_config; c=load_config(); print(c.gateway.host, c.gateway.port)')
+args=(src.server:app --host "${GATEWAY_HOST:-$configured_host}" --port "${GATEWAY_PORT:-$configured_port}")
+if [ -f .env ]; then args+=(--env-file .env); fi
+if [ "${GATEWAY_RELOAD:-0}" = 1 ]; then args+=(--reload); fi
+exec .venv/bin/python -m uvicorn "${args[@]}"

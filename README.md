@@ -1,313 +1,116 @@
 # Knowledge Gateway
 
-> **Unified Enterprise AI Knowledge Gateway**  
-> Consolidating heterogeneous knowledge sources (RAG, Open Knowledge Format, Filesystem, Git, and PostgreSQL) through local ONNX neural re-ranking, deterministic query pagination, and real-time request tailing.
+An Apache-2.0 retrieval service that gives agents one API for knowledge spread across **Qdrant, OKF Markdown, files, Git, and PostgreSQL**. It returns ranked document context with provenance, source status, and pagination. Applications decide how to use that context; the gateway does not generate answers.
 
-<p align="left">
-  <a href="https://github.com/karthikrameshdev/knowledge-gateway/actions/workflows/ci.yml"><img src="https://github.com/karthikrameshdev/knowledge-gateway/actions/workflows/ci.yml/badge.svg" alt="CI Status" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache 2.0" /></a>
-  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/Python-3.11%20%7C%203.12%20%7C%203.13-blue.svg" alt="Python Versions" /></a>
-  <a href="CODE_OF_CONDUCT.md"><img src="https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg" alt="Contributor Covenant" /></a>
-  <a href="https://fastapi.tiangolo.com"><img src="https://img.shields.io/badge/FastAPI-0.115+-009688.svg?logo=fastapi&logoColor=white" alt="FastAPI" /></a>
-  <a href="https://onnxruntime.ai"><img src="https://img.shields.io/badge/ONNX%20Runtime-1.18+-005CED.svg?logo=onnx&logoColor=white" alt="ONNX Runtime" /></a>
-</p>
+[CI](https://github.com/karthikrameshdev/knowledge-gateway/actions/workflows/ci.yml) · [API contract](docs/openapi.json) · [Architecture and deployment](docs/architecture.md) · [Contributing](CONTRIBUTING.md)
 
----
+## Run an offline demonstration
 
-## 1. Why Knowledge Gateway?
-
-As of today, most AI systems fetch context exclusively from **RAG (Retrieval-Augmented Generation)** via vector similarity search. While vector search is effective for fuzzy semantic lookups, enterprise intelligence is distributed across fundamentally different mediums:
-1. **Deterministic Graph Relations & Policies**: Open Knowledge Format (OKF) documents specifying explicit dependencies (`depends_on`, `governed_by`).
-2. **Dense Vector Indexes**: Qdrant / PgVector embeddings for semantic recall.
-3. **Relational Data**: PostgreSQL tables containing structured knowledge records and configuration parameters.
-4. **Source Code & Version Control**: Git commit histories, branch trees, and tracked file versions.
-5. **Local Filesystem & Specifications**: Architecture guides, runbooks, and Markdown documentation.
-
-The **Knowledge Gateway** acts as a unified mediator between AI agents / LLMs and all these underlying knowledge points, mirroring how an API gateway routes HTTP microservices or how an MCP gateway mediates tool invocations.
-
-```mermaid
-flowchart TD
-    Client["AI Agent / LLM / User Request"] --> GatewayAPI["Knowledge Gateway (/api/v1/query)"]
-    GatewayAPI --> CacheManager{"Gateway Cache Layer\n(Redis / In-Memory LRU/LFU)"}
-    CacheManager -- "Cache Hit (<1ms)" --> UnifiedResponse["Consolidated Paginated Response"]
-    CacheManager -- "Cache Miss" --> Dispatcher["Parallel Connector Dispatcher"]
-    
-    subgraph Connectors ["Parallel Multi-Source Connectors"]
-        RAG["RAG Vector DB (Qdrant + OpenAI Embedder)"]
-        OKF["OKF Point (YAML Frontmatter + Graph Traversal)"]
-        FS["Filesystem (Specs, Docs & Markdown)"]
-        GIT["Git Repository (Commits & Tracked Files)"]
-        SQL["SQL / Postgres (Relational Knowledge & Configs)"]
-    end
-    
-    Dispatcher --> Connectors
-    Connectors --> RawCandidates["Raw Candidate Pool"]
-    
-    RawCandidates --> ONNXEngine["ONNX Neural Re-ranking Engine"]
-    ONNXEngine --> Deduplicator["Deduplicator & Normalizer"]
-    Deduplicator --> Paginator["Deterministic Paginator"]
-    Paginator --> StoreCache["Store in Cache (TTL & Eviction)"]
-    StoreCache --> UnifiedResponse
-    
-    UnifiedResponse --> Client
-    UnifiedResponse --> Logger["Real-time Activity Logger & SSE Broadcaster"]
-    Logger --> WebUI["Web UI: Live Tailing & Inspection Drawer"]
-```
-
----
-
-## 2. Core Features
-
-- **Multi-Source Fan-Out**: Dispatches asynchronous searches across all active connectors in parallel with per-source latency bounds.
-- **High-Performance Caching Layer**:
-  - **Redis Backend**: Persistent, shared caching layer with configurable TTL and key namespacing.
-  - **In-Memory Fallback**: Zero-dependency embedded cache with configurable eviction policies (**LRU**, **LFU**, **FIFO**) and memory bounds.
-  - **Deterministic Key Hashing**: Canonical SHA-256 hash digests accounting for query text, tags, requested sources, pagination parameters, and minimum score thresholds.
-  - **Sub-Millisecond Response Times**: Instant cache hits bypass connector I/O and neural re-ranking, serving results in <1ms.
-- **Local ONNX Neural Re-ranking**: Evaluates candidate documents using a compiled ONNX neural model (`models/reranker.onnx`). Computes 8-factor feature vectors (semantic similarity, lexical overlap, title match, tag match, recency, source confidence, length prior, exact phrase match) to generate normalized confidence scores.
-- **Deterministic Pagination**: Slices consolidated candidates into pages (`page`, `page_size`, `total_pages`, `has_next`, `has_previous`). Sending the same query with incremented page numbers yields non-overlapping subsequent items.
-- **Configurable OpenAI-Compatible Embedding Endpoint**: Connects to OpenAI, OpenRouter, or local embedding servers via `config.yaml` (`openai_url`, `model_id`, `api_key`, `dimension`).
-- **Live Tailing & Activity Stream**: Real-time Server-Sent Events (SSE) feed displaying incoming queries, latency, and status without page refreshing.
-- **Deep Inspection Drawer**: Click any activity entry to inspect the exact places data was retrieved from (per-source item counts, latency, and traversal paths), cache hit status, and the raw ONNX feature score matrix.
-- **Zero-Friction Docker Harness**: `test.sh` spins up Docker PostgreSQL (`gateway_db`), Redis, and Qdrant containers automatically.
-
----
-
-## 3. Supported Knowledge Connectors
-
-| Connector | Source Type | Description | Key Provenance Metadata |
-| :--- | :--- | :--- | :--- |
-| **RAG Vector DB** | `rag` | Dense vector Approximate Nearest Neighbor search via Qdrant | `collection`, `point_id`, `dimension`, `embedding_model` |
-| **OKF Point** | `okf` | Open Knowledge Format Markdown with YAML frontmatter & graph traversal | `file_path`, `version`, `verified_by`, `traversal_path` |
-| **Filesystem** | `filesystem` | Recursive file scanner with context line snippet extraction | `file_path`, `line_number`, `file_size_bytes` |
-| **Git Repository** | `git` | Commit history and tracked repository tree inspection | `commit_hash`, `author`, `branch`, `commit_date` |
-| **PostgreSQL (SQL)** | `sql` | Relational tables (`gateway_knowledge`, `gateway_configs`) | `database`, `table`, `row_id`, `host` |
-
----
-
-## 4. Quickstart
-
-### Prerequisites
-- Python 3.10+ (Recommended: Python 3.13)
-- Docker Desktop (Optional: spins up PostgreSQL, Redis, and Qdrant containers; in-memory fallbacks included)
-
-### 1. Run Automated Test Suite & Docker Harness
-`test.sh` spins up Docker PostgreSQL (`gateway_db`), Redis, and Qdrant containers, runs database migrations and seed scripts, validates the ONNX model, executes all automated pytest suites (including caching and eviction tests), and outputs a live multi-source retrieval demo showcasing both connector fan-out and sub-millisecond cache hits:
-
-```bash
-./test.sh
-```
-
-### 2. Launch Gateway Server & Web UI
-`run.sh` bootstraps the environment and starts the gateway:
+Python 3.11+ is supported. No Docker, API key, embedding bill, or production database is needed for this mode.
 
 ```bash
 ./run.sh
+# http://127.0.0.1:8080 — dashboard, playground and request inspection
+# http://127.0.0.1:8080/docs — OpenAPI / Swagger
 ```
 
-Once started, access:
-- **Interactive UI Dashboard & Live Tailing**: [http://localhost:8080](http://localhost:8080)
-- **Interactive OpenAPI Documentation (Swagger)**: [http://localhost:8080/docs](http://localhost:8080/docs)
-- **Health Check**: [http://localhost:8080/health](http://localhost:8080/health)
-- **Cache Statistics**: [http://localhost:8080/api/v1/cache/stats](http://localhost:8080/api/v1/cache/stats)
+`run.sh` defaults to `config.demo.yaml`: synthetic documents in **explicit in-memory Qdrant**, deterministic test vectors, local sample OKF/files/Git, and an in-memory cache. SQL is disabled. There is no automatic fallback from a failed production embedding provider to synthetic vectors, and no production startup seeding.
 
----
+For a configured installation, copy `config.example.yaml`, configure the enabled sources, and run:
 
-## 5. Configuration (`config.yaml`)
-
-```yaml
-gateway:
-  name: "Knowledge Gateway"
-  version: "1.0.0"
-  host: "0.0.0.0"
-  port: 8080
-  pagination:
-    default_page_size: 5
-    max_page_size: 50
-  onnx_engine:
-    enabled: true
-    model_path: "models/reranker.onnx"
-    score_threshold: 0.15
-
-cache:
-  enabled: true
-  backend: "redis"            # "redis" or "memory"
-  ttl_seconds: 300           # 5 minutes default TTL
-  key_prefix: "kg:cache"
-  redis:
-    host: "localhost"
-    port: 6379
-    db: 0
-    password: null
-    socket_timeout: 1.5
-  memory:
-    max_items: 1000
-    eviction_policy: "lru"    # "lru", "lfu", or "fifo"
-
-rag:
-  enabled: true
-  provider: "qdrant"
-  host: "localhost"
-  port: 6333
-  collection: "gateway_knowledge_rag"
-  top_k: 8
-  embedding:
-    openai_url: "https://openrouter.ai/api/v1"
-    model_id: "openai/text-embedding-3-small"
-    api_key: "${OPENROUTER_API_KEY}"
-    dimension: 768
-
-okf:
-  enabled: true
-  root_dir: "data/okf"
-  deterministic_traversal: true
-
-filesystem:
-  enabled: true
-  directories:
-    - path: "data/docs"
-      patterns: ["*.md", "*.txt"]
-    - path: "data/specs"
-      patterns: ["*.md", "*.yaml"]
-
-git:
-  enabled: true
-  repositories:
-    - name: "knowledge-gateway"
-      path: "."
-      branch: "main"
-
-sql:
-  enabled: true
-  provider: "postgresql"
-  host: "localhost"
-  port: 5433
-  database: "gateway_db"
-  username: "postgres_admin"
-  password: "postgres_secret"
-  tables:
-    - table_name: "gateway_knowledge"
-      search_columns: ["title", "content", "category", "tags"]
-    - table_name: "gateway_configs"
-      search_columns: ["config_key", "config_value", "description"]
+```bash
+KNOWLEDGE_GATEWAY_CONFIG=config.yaml KNOWLEDGE_GATEWAY_API_KEY="$MY_GATEWAY_KEY" ./run.sh
 ```
 
----
+A nonempty `KNOWLEDGE_GATEWAY_API_KEY` protects **every `/api/` route**, including configuration, activity, SSE, and cache clearing. Send `X-API-Key` or `Authorization: Bearer`. The dashboard's **API key** button keeps the value only in page memory; authenticated SSE uses fetch, so tokens never enter stream URLs. Use TLS and a trusted identity-aware reverse proxy outside localhost. This release provides a shared service key, not user/tenant authorization.
 
-## 6. API Reference
+## Retrieval pipeline
 
-### `POST /api/v1/query`
-Executes multi-source parallel retrieval with cache check, ONNX re-ranking, and deterministic pagination.
-
-#### Request Body
-```json
-{
-  "query": "Which services depend on vault secrets engine?",
-  "tags": ["vault", "security"],
-  "sources": ["rag", "okf", "filesystem", "git", "sql"],
-  "page": 1,
-  "page_size": 3,
-  "min_score": 0.15
-}
+```mermaid
+flowchart LR
+    A[Agent / client] --> V[Validate + authenticate]
+    V --> C{Response cache}
+    C -->|hit| P[Paginated source-grounded context]
+    C -->|miss| B[Bounded parallel dispatch]
+    B --> R[Qdrant + embedding API]
+    B --> O[OKF entities + explicit relations]
+    B --> F[Filesystem documents]
+    B --> G[Git revision / commits / tree]
+    B --> S[Read-only PostgreSQL pool]
+    R & O & F & G & S --> N[Local ONNX feature reranking]
+    N --> D[Stable ordering + source/id deduplication]
+    D --> P
+    P --> T[Bounded activity inspection + SSE]
 ```
 
-#### Response Payload
-```json
-{
-  "query": "Which services depend on vault secrets engine?",
-  "tags": ["vault", "security"],
-  "page": 1,
-  "page_size": 3,
-  "total_results": 15,
-  "total_pages": 5,
-  "has_next": true,
-  "has_previous": false,
-  "latency_ms": 71.4,
-  "cached": false,
-  "cache_hit": false,
-  "sources_searched": {
-    "rag": {"source_type": "rag", "count": 5, "latency_ms": 10.8, "status": "ok"},
-    "okf": {"source_type": "okf", "count": 5, "latency_ms": 0.1, "status": "ok"},
-    "filesystem": {"source_type": "filesystem", "count": 3, "latency_ms": 1.7, "status": "ok"},
-    "git": {"source_type": "git", "count": 0, "latency_ms": 44.7, "status": "empty"},
-    "sql": {"source_type": "sql", "count": 2, "latency_ms": 11.3, "status": "ok"}
-  },
-  "items": [
-    {
-      "id": "vault-secrets-engine",
-      "source_type": "okf",
-      "title": "HashiCorp Vault Secrets Engine",
-      "score": 0.9995,
-      "onnx_score": 0.9995,
-      "snippet": "Manages all static and dynamic cryptographic secrets across the infrastructure...",
-      "provenance": {
-        "connector": "okf_knowledge_point",
-        "file_path": "data/okf/services/vault-secrets-engine.md",
-        "version": "1.15.2",
-        "status": "active",
-        "verified_by": "security-platform@enterprise.internal",
-        "traversal_path": ["Entity: vault-secrets-engine"]
-      },
-      "metadata": {
-        "doc_type": "service",
-        "tags": ["vault", "secrets", "encryption", "kms"]
-      }
-    }
-  ]
-}
+- Blocking file/Git/database/client work runs in bounded worker slots, keeping the async event loop available. Source deadlines include worker wait time. Timed-out synchronous work retains its slot until it actually finishes; network and SQL timeouts bound the underlying operations.
+- Configurable query capacity and queue deadlines return `503` with `Retry-After` under overload. Identical in-flight queries share retrieval and return independent responses/request IDs.
+- Failed/timed-out sources appear explicitly in `sources_searched`. Healthy sources still return results with `degraded: true`. Partial responses are not cached; all-source failure returns `503` instead of an empty successful answer.
+- Cache keys use canonical JSON and SHA-256 with configuration scope and a namespace. Cached payloads are copied; one caller cannot mutate another's result. Set a distinct `cache.namespace` for independent datasets that share a Redis instance.
+- Redis commands establish connectivity directly, without per-request PINGs. Failure backoff avoids repeated connection penalties. TTL, bounded memory LRU/LFU/FIFO fallback, and namespaced SCAN/UNLINK clearing are supported. Shared invalidation failures return `503`.
+- Every query response has a request ID, also returned as `X-Request-ID`. Activity includes source timing, ranking features, provenance and cache status. SSE includes heartbeats and bounded subscriber buffers.
+
+## Supported sources
+
+| Type | Implemented behavior | Provenance |
+|---|---|---|
+| `rag` | One configured Qdrant collection per gateway instance; OpenAI-compatible embedding HTTP API; strict vector size/index/finite-value validation | Collection, point ID, model and dimension |
+| `okf` | Bounded Markdown/YAML entity loading, generic explicit relationship traversal, reverse dependency/governance lookup, periodic refresh | File, version, status, verification metadata, traversal path |
+| `filesystem` | Bounded lexical search in configured directories; skips hidden files, child symlinks and oversized files | File, matching line and size |
+| `git` | Commit and tracked-tree lookup against configured repositories/revisions; subprocess argument arrays, no shell | Repository, branch/revision, commit and author |
+| `sql` | PostgreSQL pooled read-only connections, statement/connect timeouts, parameterized values and quoted identifiers | Database, table, row ID |
+
+Tags are ranking/retrieval hints, **not access-control filters**. Content deduplication is by `(source_type, id)`; cross-source semantic duplicate detection is not implemented. Pagination is stable for unchanged source snapshots and scores; it is not a durable snapshot cursor when data changes.
+
+## Query API
+
+```bash
+curl http://127.0.0.1:8080/api/v1/query \
+  -H 'Content-Type: application/json' \
+  -H "X-API-Key: $KNOWLEDGE_GATEWAY_API_KEY" \
+  -d '{"query":"Which services depend on vault-secrets-engine?","sources":["okf","filesystem"],"tags":["vault"],"page":1,"page_size":3,"min_score":0.15}'
 ```
 
-### `GET /api/v1/cache/stats`
-Returns live operational metrics from the caching layer:
-```json
-{
-  "enabled": true,
-  "backend": "redis",
-  "hits": 142,
-  "misses": 38,
-  "hit_ratio": 0.7889,
-  "total_keys": 45,
-  "ttl_seconds": 300,
-  "eviction_policy": "lru",
-  "max_items": 1000
-}
+Request limits: 64 KiB JSON body, 8,000-character nonblank query, up to 32 tags, five known source types, and pages of 1–50 items (also constrained by configured maximum). Unknown request/configuration fields fail validation. `null`/omitted sources selects enabled sources; an empty source list is invalid. An omitted page size uses the configured default.
+
+| Route | Purpose |
+|---|---|
+| `POST /api/v1/query` | Retrieve context, provenance, per-source status and paging metadata |
+| `GET /api/v1/sources/status` | Parallel bounded connector diagnostics |
+| `GET /api/v1/config` | Configuration with full secret masking |
+| `GET /api/v1/activity` | Filtered recent activity; `total` reflects the filter |
+| `GET /api/v1/activity/{request_id}` | Query inspection / feature trace |
+| `GET /api/v1/tail/stream` | SSE notifications and heartbeats |
+| `GET /api/v1/cache/stats` | Local process cache metrics |
+| `POST /api/v1/cache/clear` | Explicit invalidation; no success response if shared Redis clear fails |
+| `GET /health` | Cheap process liveness |
+| `GET /ready` | Retrieval readiness; at least one healthy enabled source required |
+
+## Ranking: what the model actually does
+
+The bundled ONNX graph is an **8 → 16 → 8 → 1 feature network with hand-authored weights**, exported by `models/export_onnx_model.py`. It is not a trained transformer cross-encoder and its scores are not calibrated factual confidence probabilities. Features are hashed-text similarity (blended with Qdrant similarity for RAG), lexical overlap, title/tag overlap, a fixed recency prior, source prior, length prior, and exact phrase overlap. Missing/disabled ONNX Runtime uses the documented heuristic path. Tie-breaking is by score, source type, then ID; input candidates are not mutated.
+
+## Verification
+
+```bash
+./test.sh                       # Offline unit/API/regression suite
+./test.sh --integration         # Isolated Docker PostgreSQL, Redis, Qdrant; stack removed on exit
+postman simulation run postman/simulations/embedding-dependencies/embedding-dependencies.sim.yaml --port 4909 --no-history --output ndjson
+# In a separate shell, while the simulation runs:
+KG_SIMULATION_URL=http://127.0.0.1:4909 .venv/bin/python -m pytest -q -m simulation
+.venv/bin/python scripts/benchmark.py http://127.0.0.1:8080
 ```
 
-### `POST /api/v1/cache/clear`
-Clears all cached entries across the active cache backend (Redis keys with prefix or memory dictionary).
+The committed simulation was built from the used subset of the public embedding API contract. It exercises actual HTTP calls through the real RAG connector for success, malformed vectors, JSON errors, HTML proxy failures, and timeout. It does not validate paid provider availability or semantic quality. See its [run context](postman/simulations/embedding-dependencies/embedding-dependencies.context.md).
 
-### `GET /api/v1/activity`
-Returns the recent audit activity log with latency stats, source counts, cache hit indicators, and client metadata.
+The October 28, 2026 validation ran **53 passing tests** with real local PostgreSQL/Redis/Qdrant and the HTTP simulation. The small local HTTP benchmark (OKF + filesystem fixtures, Python 3.13) measured cold median **2.599 ms**, warm HTTP median **1.233 ms**, and warm service median **0.080 ms**; all 20 concurrent warm requests succeeded. These are local measurements, not deployment guarantees. Full scope and output: [validation](docs/validation.md).
 
-### `GET /api/v1/activity/{request_id}`
-Returns deep inspection metadata for a single request, including raw feature vectors evaluated by the ONNX model, per-source retrieval origins, and cache status.
+## Deployment boundaries
 
-### `GET /api/v1/tail/stream`
-Server-Sent Events (SSE) stream emitting real-time events as queries are processed.
+Read [architecture.md](docs/architecture.md) before exposing the service. Production data access, tenant boundaries, source-specific credentials, TLS, durable audit storage, ingestion/change events, and deployment monitoring remain operator responsibilities. Source data can remain cached until TTL expiry or an explicit clear. This release has no automatic source-change watcher or webhook endpoint.
 
-### `GET /api/v1/sources/status`
-Returns the live connection health and document counts across all attached connectors, caching layer, and the local ONNX engine.
+Install `requirements.lock` for the pinned dependency set. The non-root Dockerfile is available; mount your configuration and source directories and provide secrets through the environment. Restrict `security.allowed_hosts` and `security.cors_origins` to your deployment. Only PostgreSQL and Qdrant are implemented database providers.
 
----
+## Contributing and license
 
-## 7. Web UI Walkthrough
-
-1. **Live Tailing & Activity Stream**: Real-time incoming request feed displaying execution latency, status codes, top ONNX confidence scores, cache hit badges, and source badges.
-2. **Deep Inspection Modal**: Click any request row to view a breakdown of every source queried, how many items each source contributed, latency per connector, cache hit details, and the neural scoring matrix.
-3. **Interactive Query Playground**: Submit natural language queries, attach/detach sources with one click, configure tags, and test multi-page pagination.
-4. **Cache & Topology Dashboard**: Monitor health status for Qdrant Vector DB, PostgreSQL, Redis / In-Memory Cache, OKF bundles, Filesystem, Git, and ONNX Runtime. Purge the cache directly from the dashboard header with one click.
-
----
-
-## 8. Contributing
-
-Contributions are welcome! Knowledge Gateway operates under a strictly protected open-source model:
-- Direct pushes and unreviewed merges to `main` are permanently blocked by branch protection rules.
-- Primary code owner: **@karthikrameshdev**. Secondary code owner and backup reviewer: **@jobphone24**. One approval from either listed code owner is required.
-- All contributions must be submitted via a **Fork & Pull Request**.
-- For detailed instructions on running tests and coding guidelines, see [CONTRIBUTING.md](CONTRIBUTING.md).
-- Please adhere to our [Code of Conduct](CODE_OF_CONDUCT.md) and report any security concerns privately via [SECURITY.md](SECURITY.md).
-
-## 9. License
-
-Apache 2.0 License. See [LICENSE](LICENSE) and [NOTICE](NOTICE) for details.
+Apache 2.0. Contributions follow [CONTRIBUTING.md](CONTRIBUTING.md) and the repository's protected-branch review requirements. Report vulnerabilities through [SECURITY.md](SECURITY.md).

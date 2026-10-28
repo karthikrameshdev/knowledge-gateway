@@ -95,6 +95,7 @@ async def test_gateway_caching_end_to_end():
 
     query = GatewayQuery(
         query="Which services depend on vault secrets engine?",
+        sources=["okf"],
         tags=["vault"],
         page=1,
         page_size=3,

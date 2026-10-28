@@ -48,7 +48,7 @@
             <h1 class="font-bold text-lg text-white tracking-tight">Knowledge Gateway</h1>
             <span class="text-xs px-2 py-0.5 rounded-full font-mono font-medium bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">v{{ version }}</span>
           </div>
-          <p class="text-xs text-slate-400">Heterogeneous Multi-Source Knowledge Retreival & ONNX Consolidation</p>
+          <p class="text-xs text-slate-400">Heterogeneous Multi-Source Knowledge Retrieval & ONNX Consolidation</p>
         </div>
       </div>
 
@@ -56,12 +56,12 @@
       <div class="flex items-center space-x-3">
         <div class="hidden md:flex items-center space-x-2 text-xs font-mono px-3 py-1.5 rounded-lg bg-slate-800/80 border border-slate-700/60 text-slate-300">
           <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-          <span>5 Sources Active</span>
+          <span>5 Connector Types</span>
         </div>
 
         <div class="hidden sm:flex items-center space-x-1.5 text-xs font-mono px-3 py-1.5 rounded-lg bg-indigo-950/60 border border-indigo-800/50 text-indigo-300">
           <i data-lucide="cpu" class="w-3.5 h-3.5 text-indigo-400"></i>
-          <span>ONNX Reranker: <strong class="text-indigo-200">{% if onnx_active %}Active (v1.31){% else %}Fallback{% endif %}</strong></span>
+          <span>ONNX Reranker: <strong class="text-indigo-200">{% if onnx_active %}Feature Model{% else %}Fallback{% endif %}</strong></span>
         </div>
 
         <div id="cacheStatusPill" class="hidden sm:flex items-center space-x-1.5 text-xs font-mono px-3 py-1.5 rounded-lg bg-amber-950/60 border border-amber-800/50 text-amber-300">
@@ -69,6 +69,7 @@
           <span>Cache: <strong id="cacheBackendPill" class="text-amber-200">Active</strong></span>
         </div>
 
+        <button onclick="setAccessToken()" class="text-xs px-3 py-2 rounded border border-slate-700">API key</button>
         <!-- Live Tailing Toggle -->
         <button id="tailingToggleBtn" onclick="toggleTailing()" class="flex items-center space-x-2 text-xs font-medium px-3.5 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/20 transition-all cursor-pointer">
           <span id="tailingDot" class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
@@ -78,6 +79,7 @@
     </div>
   </header>
 
+  <p id="gatewayFeedback" role="status" aria-live="polite" class="max-w-7xl mx-auto px-4 text-amber-300"></p>
   <!-- Navigation Tabs -->
   <div class="border-b border-slate-800 bg-slate-900/50">
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex space-x-8">

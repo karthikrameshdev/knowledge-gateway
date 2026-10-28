@@ -1,6 +1,7 @@
 import math
 import hashlib
 import logging
+import threading
 from typing import List, Dict, Any, Optional
 import httpx
 from qdrant_client import QdrantClient
@@ -22,11 +23,17 @@ class EmbeddingClient:
         model_id: str = "openai/text-embedding-3-small",
         api_key: str = "",
         dimension: int = 768,
+        provider: str = "openai",
+        timeout_seconds: float = 4.0,
+        send_dimensions: bool = True,
     ):
         self.openai_url = openai_url.rstrip("/")
         self.model_id = model_id
         self.api_key = api_key
         self.dimension = dimension
+        self.provider = provider
+        self.send_dimensions = send_dimensions
+        self.http = httpx.Client(timeout=timeout_seconds, follow_redirects=False)
 
     def embed_text(self, text: str) -> List[float]:
         return self.embed_batch([text])[0]
@@ -35,8 +42,10 @@ class EmbeddingClient:
         if not texts:
             return []
 
-        # Attempt OpenAI-compatible endpoint if API key exists
-        if self.api_key:
+        if self.provider == "deterministic":
+            return [self._deterministic_vector(t) for t in texts]
+        # Never mix synthetic vectors into a remote embedding space on failure.
+        if self.provider == "openai":
             try:
                 headers = {
                     "Authorization": f"Bearer {self.api_key}",
@@ -48,27 +57,31 @@ class EmbeddingClient:
                     "model": self.model_id,
                     "input": texts,
                 }
-                with httpx.Client(timeout=6.0) as client:
-                    resp = client.post(url, headers=headers, json=payload)
-                    if resp.status_code == 200:
-                        data = resp.json().get("data", [])
-                        vectors = []
-                        for item in data:
-                            raw_vec = item.get("embedding", [])
-                            # Normalize / fit dimension
-                            if len(raw_vec) > self.dimension:
-                                vec = raw_vec[:self.dimension]
-                            else:
-                                vec = raw_vec + [0.0] * (self.dimension - len(raw_vec))
-                            norm = math.sqrt(sum(x * x for x in vec)) or 1.0
-                            vectors.append([x / norm for x in vec])
-                        if vectors and len(vectors) == len(texts):
-                            return vectors
+                if not self.api_key:
+                    headers.pop("Authorization")
+                if self.send_dimensions:
+                    payload["dimensions"] = self.dimension
+                resp = self.http.post(url, headers=headers, json=payload)
+                resp.raise_for_status()
+                data = resp.json()["data"]
+                if len(data) != len(texts):
+                    raise ValueError("Embedding response count mismatch")
+                vectors = [None] * len(texts)
+                for item in data:
+                    idx = item["index"]
+                    raw_vec = item["embedding"]
+                    if type(idx) is not int or not 0 <= idx < len(texts) or vectors[idx] is not None:
+                        raise ValueError("Invalid embedding index")
+                    if len(raw_vec) != self.dimension or not all(type(v) in (int, float) and math.isfinite(v) for v in raw_vec):
+                        raise ValueError("Invalid embedding dimensions or values")
+                    norm = math.sqrt(sum(x * x for x in raw_vec))
+                    if norm == 0:
+                        raise ValueError("Zero embedding vector")
+                    vectors[idx] = [x / norm for x in raw_vec]
+                return vectors
             except Exception as e:
-                logger.debug("OpenAI embedding API call failed: %s. Using deterministic fallback.", e)
-
-        # Fast deterministic semantic fallback
-        return [self._deterministic_vector(t) for t in texts]
+                raise RuntimeError("Embedding provider unavailable or returned an invalid vector") from e
+        raise ValueError("Unknown embedding provider")
 
     def _deterministic_vector(self, text: str) -> List[float]:
         """Deterministic pseudo-semantic L2-normalized vector for testing and offline runs."""
@@ -107,19 +120,27 @@ class RAGConnector(BaseConnector):
             model_id=config.embedding.model_id,
             api_key=config.embedding.api_key,
             dimension=config.embedding.dimension,
+            provider=config.embedding.provider,
+            timeout_seconds=config.embedding.timeout_seconds,
+            send_dimensions=config.embedding.send_dimensions,
         )
         self.client: Optional[QdrantClient] = None
         self.is_connected = False
         self.backend_type = "uninitialized"
-        if self.enabled:
-            self._connect()
+        self._client_lock = threading.RLock()
 
     def _connect(self):
+        if self.config.mode == "memory":
+            self.client = QdrantClient(location=":memory:", check_compatibility=False)
+            self.is_connected = True
+            self.backend_type = "Explicit in-memory demo Qdrant"
+            self._ensure_collection()
+            return
         try:
             self.client = QdrantClient(
                 host=self.config.host,
                 port=self.config.port,
-                timeout=3.0,
+                timeout=self.config.timeout_seconds,
                 check_compatibility=False,
             )
             # Ping
@@ -127,13 +148,12 @@ class RAGConnector(BaseConnector):
             self.is_connected = True
             self.backend_type = f"Docker / Remote Qdrant ({self.config.host}:{self.config.port})"
             logger.info("RAG Connector connected to Qdrant at %s:%s", self.config.host, self.config.port)
-            self._ensure_collection()
-        except Exception as e:
-            logger.warning("Could not reach Qdrant at %s:%s (%s). Using embedded memory mode.", self.config.host, self.config.port, e)
-            self.client = QdrantClient(location=":memory:", check_compatibility=False)
-            self.is_connected = True
-            self.backend_type = "Embedded In-Memory Qdrant"
-            self._ensure_collection()
+        except Exception:
+            if self.client:
+                self.client.close()
+            self.client = None
+            self.is_connected = False
+            raise
 
     def _ensure_collection(self):
         if not self.client:
@@ -150,11 +170,14 @@ class RAGConnector(BaseConnector):
                     ),
                 )
                 logger.info("Created Qdrant collection: %s", self.config.collection)
-        except Exception as e:
-            logger.error("Error creating Qdrant collection %s: %s", self.config.collection, e)
+        except Exception:
+            raise
 
     def index_seed_documents(self, documents: List[Dict[str, Any]]):
         """Indexes sample documents into the Qdrant vector collection."""
+        if self.client is None:
+            self._connect()
+        self._ensure_collection()
         if not self.client or not documents:
             return
 
@@ -185,16 +208,25 @@ class RAGConnector(BaseConnector):
         )
         logger.info("Indexed %d seed points into Qdrant collection %s", len(points), self.config.collection)
 
-    async def search(
+    async def search(self, query, tags, top_k=None):
+        return await self.run_blocking(self._search_sync, query, tags, top_k)
+
+    async def health_check(self):
+        return await self.run_blocking(self._health_sync)
+
+    def _search_sync(
         self,
         query: str,
         tags: List[str],
-        top_k: int = 5,
+        top_k: int = None,
     ) -> List[GatewayKnowledgeItem]:
-        if not self.enabled or not self.client:
+        if not self.enabled:
             return []
+        with self._client_lock:
+            if self.client is None:
+                self._connect()
 
-        limit = min(top_k or self.config.top_k, 20)
+        limit = min(top_k or self.config.top_k, 100)
         query_vec = self.embedder.embed_text(query)
 
         try:
@@ -237,14 +269,17 @@ class RAGConnector(BaseConnector):
                 items.append(item)
 
             return items
-        except Exception as e:
-            logger.error("RAG search failed: %s", e)
-            return []
+        except Exception:
+            self.is_connected = False
+            raise
 
-    async def health_check(self) -> Dict[str, Any]:
+    def _health_sync(self) -> Dict[str, Any]:
         if not self.enabled:
             return {"status": "disabled", "connector": self.name}
         try:
+            with self._client_lock:
+                if self.client is None:
+                    self._connect()
             info = self.client.get_collection(self.config.collection)
             return {
                 "status": "healthy",
@@ -261,5 +296,11 @@ class RAGConnector(BaseConnector):
                 "status": "degraded",
                 "connector": self.name,
                 "backend": self.backend_type,
-                "error": str(e),
+                "error": type(e).__name__,
             }
+
+    async def aclose(self):
+        await super().aclose()
+        self.embedder.http.close()
+        if self.client:
+            self.client.close()
