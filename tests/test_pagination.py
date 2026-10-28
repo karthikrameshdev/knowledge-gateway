@@ -11,7 +11,7 @@ async def test_deterministic_pagination():
 
     # Issue query with page_size=2, page=1
     q1 = GatewayQuery(
-        query="WeftKit architecture security vault payment",
+        query="Enterprise architecture security vault payment",
         page=1,
         page_size=2,
         min_score=0.05,
@@ -28,7 +28,7 @@ async def test_deterministic_pagination():
 
         # Query page 2
         q2 = GatewayQuery(
-            query="WeftKit architecture security vault payment",
+            query="Enterprise architecture security vault payment",
             page=2,
             page_size=2,
             min_score=0.05,

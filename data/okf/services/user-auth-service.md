@@ -5,7 +5,7 @@ title: User Authentication & Identity Service
 version: 3.0.1
 status: active
 updated_at: "2026-10-20T11:00:00Z"
-verified_by: identity-team@weftkit.internal
+verified_by: identity-team@enterprise.internal
 resource: auth-prod
 tags:
   - auth
@@ -25,5 +25,5 @@ The core authentication provider issuing Ed25519-signed JWT tokens and handling 
 
 ## Supported Protocols
 - Google Identity OpenID Connect (OIDC).
-- Loopback desktop redirect for Tauri desktop applications (WeftKit client).
+- Loopback desktop redirect for native client applications.
 - API token signing keys rotate dynamically via HashiCorp Vault.

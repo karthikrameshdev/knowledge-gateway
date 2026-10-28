@@ -37,9 +37,9 @@ async def test_filesystem_connector():
     assert health["status"] == "healthy"
     assert health["total_files"] >= 2
 
-    results = await connector.search("WeftKit desktop architecture and Tauri", tags=[])
+    results = await connector.search("Enterprise desktop architecture guide", tags=[])
     assert len(results) >= 1
-    assert any("architecture" in r.title.lower() or "weftkit" in r.title.lower() for r in results)
+    assert any("architecture" in r.title.lower() or "enterprise" in r.title.lower() for r in results)
 
 
 @pytest.mark.asyncio

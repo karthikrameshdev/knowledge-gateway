@@ -27,10 +27,10 @@ if [ ! -f "models/reranker.onnx" ]; then
     $PYTHON models/export_onnx_model.py
 fi
 
-# 3. Check Docker PostgreSQL and Qdrant
+# 3. Check Docker PostgreSQL and Redis
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-    echo "[+] Starting Docker dependencies (PostgreSQL 5433)..."
-    docker compose -f docker-compose.test.yml up -d weftkit_postgres >/dev/null 2>&1 || true
+    echo "[+] Starting Docker dependencies (PostgreSQL 5433 & Redis 6379)..."
+    docker compose -f docker-compose.test.yml up -d postgres redis >/dev/null 2>&1 || true
 fi
 
 # 4. Read port from config or environment

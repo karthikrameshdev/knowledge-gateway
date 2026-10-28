@@ -5,7 +5,7 @@ title: Payment Gateway V2 Service
 version: 2.1.0
 status: active
 updated_at: "2026-10-15T09:30:00Z"
-verified_by: sec-ops@weftkit.internal
+verified_by: sec-ops@enterprise.internal
 resource: payment-core
 tags:
   - payment
@@ -22,7 +22,7 @@ relations:
 
 # Payment Gateway V2 Service
 
-The Payment Gateway V2 is the mission-critical transaction settlement service for WeftKit.
+The Payment Gateway V2 is the mission-critical transaction settlement service for core platforms.
 It communicates with external card networks and Stripe payment rails.
 
 ## Security Controls

@@ -58,7 +58,7 @@ class RAGConfig(BaseModel):
     provider: str = "qdrant"
     host: str = "localhost"
     port: int = 6333
-    collection: str = "weftkit_knowledge_rag"
+    collection: str = "enterprise_knowledge_rag"
     top_k: int = 8
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
 
@@ -107,16 +107,35 @@ class SQLConfig(BaseModel):
     provider: str = "postgresql"
     host: str = "localhost"
     port: int = 5433
-    database: str = "weftkit_db"
-    username: str = "weftkit_admin"
-    password: str = "weftkit_secret"
+    database: str = "gateway_db"
+    username: "str" = "postgres_admin"
+    password: str = "postgres_secret"
     timeout_seconds: float = 4.0
     tables: List[SQLTableConfig] = Field(default_factory=list)
     max_results: int = 8
 
 
+class RedisConfig(BaseModel):
+    host: str = "localhost"
+    port: int = 6379
+    db: int = 0
+    password: str = ""
+    timeout_seconds: float = 2.0
+    key_prefix: str = "kg:cache:"
+
+
+class CacheConfig(BaseModel):
+    enabled: bool = True
+    backend: str = "redis"  # "redis" or "memory"
+    ttl_seconds: int = 300
+    eviction_policy: str = "lru"  # "lru", "lfu", "fifo"
+    max_entries: int = 1000
+    redis: RedisConfig = Field(default_factory=RedisConfig)
+
+
 class GatewayConfig(BaseModel):
     gateway: GatewayServerConfig = Field(default_factory=GatewayServerConfig)
+    cache: CacheConfig = Field(default_factory=CacheConfig)
     rag: RAGConfig = Field(default_factory=RAGConfig)
     okf: OKFConfig = Field(default_factory=OKFConfig)
     filesystem: FilesystemConfig = Field(default_factory=FilesystemConfig)

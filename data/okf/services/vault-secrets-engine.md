@@ -5,7 +5,7 @@ title: HashiCorp Vault Secrets Engine
 version: 1.15.2
 status: active
 updated_at: "2026-10-18T14:15:00Z"
-verified_by: security-platform@weftkit.internal
+verified_by: security-platform@enterprise.internal
 resource: vault-prod
 tags:
   - vault

@@ -64,6 +64,11 @@
           <span>ONNX Reranker: <strong class="text-indigo-200">{% if onnx_active %}Active (v1.31){% else %}Fallback{% endif %}</strong></span>
         </div>
 
+        <div id="cacheStatusPill" class="hidden sm:flex items-center space-x-1.5 text-xs font-mono px-3 py-1.5 rounded-lg bg-amber-950/60 border border-amber-800/50 text-amber-300">
+          <i data-lucide="zap" class="w-3.5 h-3.5 text-amber-400"></i>
+          <span>Cache: <strong id="cacheBackendPill" class="text-amber-200">Active</strong></span>
+        </div>
+
         <!-- Live Tailing Toggle -->
         <button id="tailingToggleBtn" onclick="toggleTailing()" class="flex items-center space-x-2 text-xs font-medium px-3.5 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/20 transition-all cursor-pointer">
           <span id="tailingDot" class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
@@ -119,13 +124,17 @@
         </div>
 
         <div class="flex items-center space-x-2 w-full sm:w-auto justify-end">
-          <button onclick="sendQuickSampleQuery('How does WeftKit handle Google auth?')" class="text-xs px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 flex items-center space-x-1.5 transition">
+          <button onclick="sendQuickSampleQuery('How does OAuth 2.0 PKCE desktop authentication work?')" class="text-xs px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 flex items-center space-x-1.5 transition">
             <i data-lucide="play" class="w-3.5 h-3.5 text-indigo-400"></i>
             <span>Test Auth Query</span>
           </button>
           <button onclick="sendQuickSampleQuery('Zero Trust compliance policies for vault and payment')" class="text-xs px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 flex items-center space-x-1.5 transition">
             <i data-lucide="play" class="w-3.5 h-3.5 text-indigo-400"></i>
             <span>Test Security Query</span>
+          </button>
+          <button onclick="clearCacheFromUI()" title="Clear Cache" class="text-xs px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-rose-900/40 text-slate-300 hover:text-rose-400 border border-slate-700 flex items-center space-x-1">
+            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+            <span>Clear Cache</span>
           </button>
           <button onclick="fetchActivityLogs()" class="text-xs p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700">
             <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
@@ -206,7 +215,7 @@
               </label>
               <label class="flex items-center space-x-2 p-2 rounded bg-slate-950/60 border border-slate-800 cursor-pointer hover:bg-slate-800/40 col-span-2">
                 <input type="checkbox" id="src-sql" checked class="rounded border-slate-700 text-indigo-600 focus:ring-indigo-500">
-                <span>SQL Postgres (WeftKit DB)</span>
+                <span>SQL Database (Postgres / MySQL)</span>
               </label>
             </div>
           </div>

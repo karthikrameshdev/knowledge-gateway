@@ -5,7 +5,7 @@ title: Zero Trust Network Architecture Policy
 version: 2.5.0
 status: active
 updated_at: "2026-08-14T08:00:00Z"
-verified_by: ciso@weftkit.internal
+verified_by: ciso@enterprise.internal
 tags:
   - zero-trust
   - network

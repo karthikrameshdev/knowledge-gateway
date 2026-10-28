@@ -1,25 +1,25 @@
 services:
-  weftkit_postgres:
+  postgres:
     image: postgres:16-alpine
-    container_name: weftkit_test_postgres
+    container_name: gateway_test_postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: weftkit_db
-      POSTGRES_USER: weftkit_admin
-      POSTGRES_PASSWORD: weftkit_secret
+      POSTGRES_DB: gateway_db
+      POSTGRES_USER: postgres_admin
+      POSTGRES_PASSWORD: postgres_secret
     ports:
       - "5433:5432"
     volumes:
-      - ./docker/init-weftkit-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./docker/init-postgres-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U weftkit_admin -d weftkit_db"]
+      test: ["CMD-SHELL", "pg_isready -U postgres_admin -d gateway_db"]
       interval: 3s
       timeout: 3s
       retries: 10
 
   qdrant:
     image: qdrant/qdrant:latest
-    container_name: weftkit_test_qdrant
+    container_name: gateway_test_qdrant
     restart: unless-stopped
     ports:
       - "6333:6333"
@@ -29,6 +29,18 @@ services:
       QDRANT__SERVICE__GRPC_PORT: 6334
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'cat < /dev/null > /dev/tcp/localhost/6333'"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: gateway_test_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
       interval: 3s
       timeout: 3s
       retries: 10

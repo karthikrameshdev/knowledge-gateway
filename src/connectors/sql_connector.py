@@ -11,7 +11,7 @@ logger = logging.getLogger("SQLConnector")
 
 
 class SQLConnector(BaseConnector):
-    """PostgreSQL relational database connector for WeftKit and enterprise SQL stores."""
+    """PostgreSQL and relational SQL database connector for enterprise stores."""
 
     def __init__(self, config: SQLConfig):
         super().__init__(name="sql_postgres_db", source_type="sql", enabled=config.enabled)

@@ -5,7 +5,7 @@ title: Multi-Region Disaster Recovery & Failover Runbook
 version: 3.2.0
 status: active
 updated_at: "2026-10-10T16:00:00Z"
-verified_by: sre-lead@weftkit.internal
+verified_by: sre-lead@enterprise.internal
 tags:
   - runbook
   - disaster-recovery

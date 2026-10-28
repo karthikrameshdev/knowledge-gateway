@@ -15,6 +15,7 @@ from .models import (
 )
 from .logger import ActivityLogger, global_activity_logger
 from .onnx_engine import ONNXConsolidatorEngine
+from .cache import GatewayCacheManager
 from .connectors.base import BaseConnector
 from .connectors.rag_connector import RAGConnector
 from .connectors.okf_connector import OKFConnector
@@ -34,6 +35,7 @@ class KnowledgeGateway:
         self.config = config or load_config()
         self.logger = logger_instance or global_activity_logger
         self.onnx_engine = ONNXConsolidatorEngine(self.config.gateway.onnx_engine)
+        self.cache = GatewayCacheManager(self.config.cache)
         self.connectors: Dict[str, BaseConnector] = {}
         self._init_connectors()
 
@@ -58,6 +60,37 @@ class KnowledgeGateway:
         start_ns = time.perf_counter_ns()
         request_id = f"req_{uuid.uuid4().hex[:12]}"
         timestamp = datetime.now(timezone.utc).isoformat()
+
+        # Check Cache Layer first
+        cached_resp = await self.cache.get_cached_response(query_req)
+        if cached_resp:
+            total_latency_ms = round((time.perf_counter_ns() - start_ns) / 1_000_000.0, 3)
+            cached_resp.latency_ms = total_latency_ms
+            activity_entry = ActivityLogEntry(
+                request_id=request_id,
+                timestamp=timestamp,
+                client_ip=client_ip,
+                method="POST",
+                path="/api/v1/query",
+                status_code=200,
+                latency_ms=total_latency_ms,
+                query=query_req.query,
+                tags=query_req.tags,
+                page=query_req.page,
+                page_size=query_req.page_size,
+                sources_attempted=list(self.connectors.keys()),
+                source_breakdown={"cache": {"status": "hit", "backend": cached_resp.cache_backend, "latency_ms": total_latency_ms}},
+                total_raw_candidates=cached_resp.total_results,
+                total_consolidated_items=cached_resp.total_results,
+                items_returned_count=len(cached_resp.items),
+                top_score=cached_resp.items[0].score if cached_resp.items else 0.0,
+                candidates_reranking=[],
+                cached=True,
+                cache_backend=cached_resp.cache_backend,
+                response_payload=cached_resp.model_dump(),
+            )
+            self.logger.record(activity_entry)
+            return cached_resp
 
         # Determine which connectors to query
         requested_sources = query_req.sources
@@ -148,7 +181,12 @@ class KnowledgeGateway:
             latency_ms=total_latency_ms,
             sources_searched=sources_searched_stats,
             items=paginated_items,
+            cached=False,
+            cache_backend=self.cache.get_stats().get("backend", "cache"),
         )
+
+        # Cache the response for subsequent identical requests
+        await self.cache.cache_response(query_req, response)
 
         # Record activity entry for live tailing and auditing
         activity_entry = ActivityLogEntry(
@@ -170,6 +208,8 @@ class KnowledgeGateway:
             items_returned_count=len(paginated_items),
             top_score=top_score,
             candidates_reranking=candidate_traces,
+            cached=False,
+            cache_backend=self.cache.get_stats().get("backend", "cache"),
             response_payload=response.model_dump(),
         )
         self.logger.record(activity_entry)
@@ -192,13 +232,15 @@ class KnowledgeGateway:
             raise e
 
     async def get_all_sources_status(self) -> Dict[str, Any]:
-        """Runs health checks on all configured connectors and ONNX engine."""
+        """Runs health checks on all configured connectors, cache, and ONNX engine."""
         statuses = {}
         for k, conn in self.connectors.items():
             try:
                 statuses[k] = await conn.health_check()
             except Exception as e:
                 statuses[k] = {"status": "error", "error": str(e)}
+
+        statuses["cache"] = self.cache.get_stats()
 
         statuses["onnx_engine"] = {
             "status": "active" if self.onnx_engine.is_onnx_active else "fallback_heuristic",

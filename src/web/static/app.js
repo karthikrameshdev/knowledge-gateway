@@ -13,7 +13,36 @@ document.addEventListener("DOMContentLoaded", () => {
   initSSE();
   fetchActivityLogs();
   fetchTopologyStatus();
+  updateCacheHeader();
 });
+
+// Cache Header Stats
+async function updateCacheHeader() {
+  try {
+    const res = await fetch("/api/v1/cache/stats");
+    const data = await res.json();
+    const pill = document.getElementById("cacheBackendPill");
+    if (pill) {
+      if (data.enabled) {
+        pill.innerText = `${data.backend.toUpperCase()} (${data.hit_ratio_percent || 0}% hit rate)`;
+      } else {
+        pill.innerText = "Disabled";
+      }
+    }
+  } catch (e) {
+    console.debug("Cache stats check failed:", e);
+  }
+}
+
+async function clearCacheFromUI() {
+  try {
+    await fetch("/api/v1/cache/clear", { method: "POST" });
+    await updateCacheHeader();
+    await fetchActivityLogs();
+  } catch (e) {
+    console.error("Failed to clear cache:", e);
+  }
+}
 
 // Tab Switching
 function switchTab(tabName) {
@@ -61,7 +90,6 @@ function initSSE() {
     };
 
     eventSource.onerror = () => {
-      // Reconnect silently after 4s
       setTimeout(() => {
         if (isTailingActive) initSSE();
       }, 4000);
@@ -92,13 +120,11 @@ function toggleTailing() {
 }
 
 function handleLiveTailEvent(entry) {
-  // Prepend entry to in-memory list
   activityEntries.unshift(entry);
   updateActivityBadge();
+  updateCacheHeader();
 
-  // Render row in table with flash animation
   const tbody = document.getElementById("activityTableBody");
-  // Remove empty placeholder if present
   if (tbody.querySelector("td[colspan]")) {
     tbody.innerHTML = "";
   }
@@ -106,7 +132,6 @@ function handleLiveTailEvent(entry) {
   const row = createActivityRow(entry, true);
   tbody.insertBefore(row, tbody.firstChild);
 
-  // Keep max 50 rows in DOM
   while (tbody.children.length > 50) {
     tbody.removeChild(tbody.lastChild);
   }
@@ -131,6 +156,7 @@ async function fetchActivityLogs() {
     activityEntries = data.entries || [];
     updateActivityBadge();
     renderActivityTable(activityEntries);
+    updateCacheHeader();
   } catch (err) {
     console.error("Failed to fetch activity logs:", err);
   }
@@ -177,7 +203,6 @@ function createActivityRow(entry, isNew) {
   const tr = document.createElement("tr");
   tr.className = `hover:bg-slate-800/40 transition-colors cursor-pointer ${isNew ? "flash-row" : ""}`;
   tr.onclick = (e) => {
-    // If clicked action button, let it handle
     if (!e.target.closest("button")) {
       openInspector(entry.request_id);
     }
@@ -187,11 +212,20 @@ function createActivityRow(entry, isNew) {
   const scoreClass = entry.top_score >= 0.8 ? "score-high" : entry.top_score >= 0.4 ? "score-med" : "score-low";
 
   // Build sources chips
-  let sourcesHtml = '<div class="flex flex-wrap gap-1">';
+  let sourcesHtml = '<div class="flex flex-wrap gap-1 items-center">';
+  if (entry.cached) {
+    sourcesHtml += `
+      <span class="px-1.5 py-0.5 rounded text-3xs font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center space-x-1">
+        <span>⚡ CACHE HIT</span>
+      </span>
+    `;
+  }
+
   const breakdown = entry.source_breakdown || {};
   const attempted = entry.sources_attempted || Object.keys(breakdown);
 
   attempted.forEach((src) => {
+    if (src === "cache") return;
     const info = breakdown[src] || {};
     const count = info.count ?? 0;
     const badgeColor = getSourceBadgeStyle(src);
@@ -217,7 +251,7 @@ function createActivityRow(entry, isNew) {
     <td class="py-3 px-4 text-center">
       <span class="score-pill ${scoreClass}">${(entry.top_score ?? 0).toFixed(3)}</span>
     </td>
-    <td class="py-3 px-4 text-center text-emerald-400">${(entry.latency_ms ?? 0).toFixed(1)}ms</td>
+    <td class="py-3 px-4 text-center ${entry.cached ? 'text-amber-400 font-bold' : 'text-emerald-400'}">${(entry.latency_ms ?? 0).toFixed(1)}ms</td>
     <td class="py-3 px-4 text-right">
       <button onclick="openInspector('${entry.request_id}')" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-indigo-600 text-slate-300 hover:text-white transition text-xs font-sans">
         Inspect
@@ -261,7 +295,8 @@ async function openInspector(requestId) {
     if (!res.ok) throw new Error("Activity not found");
     const detail = await res.json();
 
-    document.getElementById("inspectTimestamp").innerText = `${detail.timestamp} • ${detail.latency_ms.toFixed(2)}ms total latency`;
+    const cacheLabel = detail.cached ? `⚡ CACHED (${detail.cache_backend || 'cache'})` : 'FRESH RETRIEVAL';
+    document.getElementById("inspectTimestamp").innerText = `${detail.timestamp} • ${detail.latency_ms.toFixed(2)}ms latency • ${cacheLabel}`;
     document.getElementById("inspectQueryText").innerText = detail.query;
 
     // Tags
@@ -275,6 +310,22 @@ async function openInspector(requestId) {
     const sourcesGrid = document.getElementById("inspectSourcesGrid");
     sourcesGrid.innerHTML = "";
 
+    // Add Cache Card if cached
+    if (detail.cached) {
+      sourcesGrid.innerHTML += `
+        <div class="p-3.5 rounded-xl bg-amber-950/30 border border-amber-500/40 col-span-full space-y-1">
+          <div class="flex items-center justify-between">
+            <span class="font-bold text-xs text-amber-300 flex items-center space-x-1.5">
+              <i data-lucide="zap" class="w-4 h-4 text-amber-400"></i>
+              <span>ACCELERATED CACHE HIT (${(detail.cache_backend || 'cache').toUpperCase()})</span>
+            </span>
+            <span class="font-mono text-2xs text-amber-400">${detail.latency_ms.toFixed(2)}ms (Instant)</span>
+          </div>
+          <p class="text-2xs text-slate-300">Data returned directly from high-speed cache. Multi-source fan-out and ONNX re-ranking was bypassed to eliminate compute latency.</p>
+        </div>
+      `;
+    }
+
     const breakdown = detail.source_breakdown || {};
     const allKnownSources = ["rag", "okf", "filesystem", "git", "sql"];
 
@@ -283,7 +334,9 @@ async function openInspector(requestId) {
       const isQueried = detail.sources_attempted?.includes(srcKey);
       const isSuccess = srcInfo.status === "ok" || (srcInfo.count && srcInfo.count > 0);
 
-      const statusBadge = !isQueried
+      const statusBadge = detail.cached
+        ? `<span class="text-2xs text-amber-400/80 font-mono">Cached from previous retrieval</span>`
+        : !isQueried
         ? `<span class="text-2xs text-slate-500 font-mono">Not Selected</span>`
         : isSuccess
         ? `<span class="text-2xs text-emerald-400 font-mono flex items-center space-x-1"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span><span>Retrieved ${srcInfo.count} items</span></span>`
@@ -343,7 +396,7 @@ function getSourceTitle(key) {
     case "okf": return "OKF Knowledge Point";
     case "filesystem": return "Filesystem Docs";
     case "git": return "Git Repository";
-    case "sql": return "PostgreSQL (WeftKit)";
+    case "sql": return "Relational SQL (Postgres / MySQL)";
     default: return key.toUpperCase();
   }
 }
@@ -411,6 +464,7 @@ async function executePlaygroundQuery() {
 
     const data = await res.json();
     renderPlaygroundResults(data);
+    updateCacheHeader();
   } catch (err) {
     console.error("Playground query error:", err);
   } finally {
@@ -440,6 +494,13 @@ function renderPlaygroundResults(data) {
   // Render sources pills
   const pillsContainer = document.getElementById("resSourcesPills");
   pillsContainer.innerHTML = "";
+  if (data.cached) {
+    pillsContainer.innerHTML += `
+      <span class="px-2 py-0.5 rounded text-3xs font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center space-x-1">
+        <span>⚡ CACHE HIT (${(data.cache_backend || 'cache').toUpperCase()})</span>
+      </span>
+    `;
+  }
   for (const [srcKey, stat] of Object.entries(data.sources_searched || {})) {
     pillsContainer.innerHTML += `
       <span class="px-2 py-0.5 rounded text-3xs font-mono ${getSourceBadgeStyle(srcKey)}">
@@ -516,7 +577,7 @@ async function fetchTopologyStatus() {
     grid.innerHTML = "";
 
     for (const [key, info] of Object.entries(data)) {
-      const isHealthy = info.status === "healthy" || info.status === "active";
+      const isHealthy = info.status === "healthy" || info.status === "active" || info.enabled === true;
       grid.innerHTML += `
         <div class="bg-slate-900/70 p-5 rounded-xl border ${isHealthy ? "border-slate-800" : "border-amber-500/30"} space-y-3">
           <div class="flex items-center justify-between">
@@ -525,7 +586,7 @@ async function fetchTopologyStatus() {
               <span>${key.toUpperCase()}</span>
             </span>
             <span class="px-2 py-0.5 rounded text-3xs font-mono ${isHealthy ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" : "bg-amber-500/10 text-amber-400 border border-amber-500/20"}">
-              ${info.status.toUpperCase()}
+              ${(info.status || (info.enabled ? 'ACTIVE' : 'INACTIVE')).toUpperCase()}
             </span>
           </div>
 

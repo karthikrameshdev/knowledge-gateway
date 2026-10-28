@@ -9,9 +9,9 @@ async def test_end_to_end_gateway_retrieval():
     config = load_config()
     gateway = KnowledgeGateway(config)
 
-    # Multi-source prompt testing WeftKit, Vault, PCI compliance, Tauri
+    # Multi-source prompt testing Enterprise, Vault, PCI compliance, Architecture
     query_req = GatewayQuery(
-        query="WeftKit architecture, vault secrets, and PCI DSS compliance standard",
+        query="Enterprise architecture, vault secrets, and PCI DSS compliance standard",
         tags=["vault", "pci-dss", "architecture"],
         page=1,
         page_size=10,

@@ -37,6 +37,8 @@ class ActivityLogger:
             "top_score": entry.top_score,
             "page": entry.page,
             "page_size": entry.page_size,
+            "cached": entry.cached,
+            "cache_backend": entry.cache_backend,
         }
         msg = f"data: {json.dumps(event_data)}\n\n"
 

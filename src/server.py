@@ -43,35 +43,35 @@ async def lifespan(app: FastAPI):
         if rag_conn and rag_conn.enabled:
             rag_conn.index_seed_documents([
                 {
-                    "id": "weftkit_rag_core_arch",
-                    "title": "WeftKit Desktop Native Core & IPC Bridge",
-                    "content": "WeftKit desktop architecture leverages Tauri with Rust native bindings. The frontend React client invokes secure IPC commands to access system resources, native file watchers, and OS keychains.",
+                    "id": "enterprise_rag_core_arch",
+                    "title": "Enterprise Native Core & IPC Bridge",
+                    "content": "Enterprise desktop architecture leverages native bindings. The frontend client invokes secure IPC commands to access system resources, native file watchers, and OS keychains.",
                     "category": "architecture",
-                    "tags": ["tauri", "rust", "desktop", "architecture"],
+                    "tags": ["native", "ipc", "desktop", "architecture"],
                 },
                 {
-                    "id": "weftkit_rag_auth_flow",
-                    "title": "WeftKit OAuth PKCE Authentication Rails",
-                    "content": "Desktop authentication is performed via Google Identity with loopback redirects on 127.0.0.1. Tokens are verified with Ed25519 signing keys and cached securely in the macOS Keychain.",
+                    "id": "enterprise_rag_auth_flow",
+                    "title": "Enterprise OAuth PKCE Authentication Rails",
+                    "content": "Client authentication is performed via Google Identity with loopback redirects on 127.0.0.1. Tokens are verified with Ed25519 signing keys and cached securely in the OS Keychain.",
                     "category": "security",
                     "tags": ["auth", "google", "oauth", "pkce"],
                 },
                 {
-                    "id": "weftkit_rag_vault_transit",
+                    "id": "enterprise_rag_vault_transit",
                     "title": "HashiCorp Vault Transit Engine Encryption",
                     "content": "Database credentials rotate every hour. Transit engine handles encryption-at-rest for PostgreSQL and vector embeddings without storing plain cryptographic keys on worker nodes.",
                     "category": "security",
                     "tags": ["vault", "transit", "encryption", "kms"],
                 },
                 {
-                    "id": "weftkit_rag_pci_dss",
+                    "id": "enterprise_rag_pci_dss",
                     "title": "PCI-DSS Level 1 Compliance & Tokenization",
                     "content": "Cardholder payment transactions are tokenized end-to-end. Cardholder data environment (CDE) is isolated with strict zero-trust network boundaries and auditable access logs.",
                     "category": "compliance",
                     "tags": ["pci-dss", "payment", "compliance", "stripe"],
                 },
                 {
-                    "id": "weftkit_rag_disaster_recovery",
+                    "id": "enterprise_rag_disaster_recovery",
                     "title": "Automated Multi-Region Failover Architecture",
                     "content": "Multi-region disaster recovery ensures sub-5-minute RTO and zero RPO. PostgreSQL standby read replicas are promoted automatically when health check ping fails.",
                     "category": "infrastructure",
@@ -195,6 +195,19 @@ async def get_sanitized_config():
     return data
 
 
+@app.get("/api/v1/cache/stats")
+async def get_cache_stats():
+    """Returns hit/miss ratio, active backend, and key counts for the caching layer."""
+    return gateway.cache.get_stats()
+
+
+@app.post("/api/v1/cache/clear")
+async def clear_cache():
+    """Flushes all cached responses across Redis or In-Memory stores."""
+    await gateway.cache.clear()
+    return {"status": "cleared", "message": "Cache successfully invalidated."}
+
+
 @app.get("/health")
 async def health_check():
     """Service health check."""
@@ -203,4 +216,5 @@ async def health_check():
         "service": "knowledge-gateway",
         "version": config.gateway.version,
         "onnx_model_active": gateway.onnx_engine.is_onnx_active,
+        "cache": gateway.cache.get_stats(),
     }

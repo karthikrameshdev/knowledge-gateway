@@ -18,6 +18,21 @@ gateway:
       tag_match: 0.10
       source_confidence: 0.15
 
+# Caching Layer (Redis with automatic In-Memory fallback, TTL, and Eviction policies)
+cache:
+  enabled: true
+  backend: "redis" # Options: "redis" or "memory"
+  ttl_seconds: 300 # Default TTL: 5 minutes
+  eviction_policy: "lru" # Options: "lru", "lfu", "fifo"
+  max_entries: 1000 # Maximum cache capacity
+  redis:
+    host: "localhost"
+    port: 6379
+    db: 0
+    password: ""
+    timeout_seconds: 2.0
+    key_prefix: "kg:cache:"
+
 # Connectors Configuration
 
 # 1. RAG Vector Database
@@ -26,7 +41,7 @@ rag:
   provider: "qdrant"
   host: "localhost"
   port: 6333
-  collection: "weftkit_knowledge_rag"
+  collection: "enterprise_knowledge_rag"
   top_k: 8
   embedding:
     # OpenAI-compatible embedding endpoint configuration
@@ -62,23 +77,23 @@ git:
       max_commits: 15
       max_results: 6
 
-# 5. SQL Database (PostgreSQL / WeftKit Database)
+# 5. SQL Database (PostgreSQL / MySQL / Relational Database)
 sql:
   enabled: true
   provider: "postgresql"
   host: "localhost"
   port: 5433
-  database: "weftkit_db"
-  username: "weftkit_admin"
-  password: "weftkit_secret"
+  database: "gateway_db"
+  username: "postgres_admin"
+  password: "postgres_secret"
   timeout_seconds: 4.0
   tables:
-    - table_name: "weftkit_knowledge"
+    - table_name: "knowledge_articles"
       search_columns: ["title", "content", "category", "tags"]
       id_column: "id"
       title_column: "title"
       content_column: "content"
-    - table_name: "weftkit_configs"
+    - table_name: "system_configs"
       search_columns: ["config_key", "config_value", "description", "scope"]
       id_column: "id"
       title_column: "config_key"

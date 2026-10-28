@@ -45,6 +45,8 @@ class GatewayResponse(BaseModel):
     latency_ms: float
     sources_searched: Dict[str, SourceRetrievalStats]
     items: List[GatewayKnowledgeItem]
+    cached: bool = False
+    cache_backend: Optional[str] = None
 
 
 class ActivityCandidateTrace(BaseModel):
@@ -76,4 +78,6 @@ class ActivityLogEntry(BaseModel):
     items_returned_count: int = 0
     top_score: float = 0.0
     candidates_reranking: List[ActivityCandidateTrace] = Field(default_factory=list)
+    cached: bool = False
+    cache_backend: Optional[str] = None
     response_payload: Optional[Dict[str, Any]] = None
