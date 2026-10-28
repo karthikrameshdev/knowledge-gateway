@@ -3,6 +3,15 @@
 > **Unified Enterprise AI Knowledge Gateway**  
 > Consolidating heterogeneous knowledge sources (RAG, Open Knowledge Format, Filesystem, Git, and PostgreSQL) through local ONNX neural re-ranking, deterministic query pagination, and real-time request tailing.
 
+<p align="left">
+  <a href="https://github.com/karthikrameshdev/knowledge-gateway/actions/workflows/ci.yml"><img src="https://github.com/karthikrameshdev/knowledge-gateway/actions/workflows/ci.yml/badge.svg" alt="CI Status" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache 2.0" /></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/Python-3.11%20%7C%203.12%20%7C%203.13-blue.svg" alt="Python Versions" /></a>
+  <a href="CODE_OF_CONDUCT.md"><img src="https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg" alt="Contributor Covenant" /></a>
+  <a href="https://fastapi.tiangolo.com"><img src="https://img.shields.io/badge/FastAPI-0.115+-009688.svg?logo=fastapi&logoColor=white" alt="FastAPI" /></a>
+  <a href="https://onnxruntime.ai"><img src="https://img.shields.io/badge/ONNX%20Runtime-1.18+-005CED.svg?logo=onnx&logoColor=white" alt="ONNX Runtime" /></a>
+</p>
+
 ---
 
 ## 1. Why Knowledge Gateway?
@@ -290,6 +299,15 @@ Returns the live connection health and document counts across all attached conne
 
 ---
 
-## 8. License
+## 8. Contributing
 
-Apache 2.0 License.
+Contributions are welcome! Knowledge Gateway operates under a strictly protected open-source model:
+- Direct pushes and unreviewed merges to `main` are permanently blocked by branch protection rules.
+- Primary code owner: **@karthikrameshdev**. Secondary code owner and backup reviewer: **@jobphone24**. One approval from either listed code owner is required.
+- All contributions must be submitted via a **Fork & Pull Request**.
+- For detailed instructions on running tests and coding guidelines, see [CONTRIBUTING.md](CONTRIBUTING.md).
+- Please adhere to our [Code of Conduct](CODE_OF_CONDUCT.md) and report any security concerns privately via [SECURITY.md](SECURITY.md).
+
+## 9. License
+
+Apache 2.0 License. See [LICENSE](LICENSE) and [NOTICE](NOTICE) for details.

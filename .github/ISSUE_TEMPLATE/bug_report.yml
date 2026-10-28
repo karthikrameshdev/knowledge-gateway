@@ -1,0 +1,53 @@
+name: 🐛 Bug Report
+description: Report a bug, crash, caching error, or connector failure in Knowledge Gateway
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting an issue! Please provide detailed information to help us reproduce and fix it.
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: A clear and concise description of what the bug is.
+      placeholder: When querying /api/v1/query with source okf and pagination page=2, ...
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: Detailed steps to reproduce the behavior.
+      placeholder: |
+        1. Launch Knowledge Gateway via `./run.sh`
+        2. Send POST /api/v1/query with payload ...
+        3. Observe response status or error
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment & Version Details
+      description: Please share your operating system and environment versions.
+      placeholder: |
+        - OS: macOS Sonoma 14.x / Ubuntu 22.04 / Linux
+        - Python version: 3.11 / 3.12 / 3.13
+        - Redis version: 7.x (or in-memory)
+        - Docker version: 27.x
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Terminal Logs / Traceback
+      description: Please paste any relevant console output or stack traces.
+      render: shell

@@ -1,0 +1,35 @@
+name: ✨ Feature Request
+description: Suggest an idea, new connector, or enhancement for Knowledge Gateway
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for suggesting a feature! Clear use cases and architectural rationale help us evaluate and prioritize new capabilities.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement
+      description: Is your feature request related to a missing connector, cache policy, or routing bottleneck?
+      placeholder: I am connecting to an external source and need...
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: Describe the solution, connector, or feature you would like to see implemented.
+      placeholder: Add Elasticsearch / OpenSearch connector or...
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Describe any alternative solutions or workarounds you considered.
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional Context
+      description: Add any architecture diagrams, specs, or benchmark context.

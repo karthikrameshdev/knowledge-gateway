@@ -1,0 +1,6 @@
+# Code Owners for knowledge-gateway
+# Primary code owner and repository maintainer: @karthikrameshdev
+# Secondary code owner and backup reviewer: @jobphone24
+# Pull requests require one code-owner approval. Either listed owner can approve.
+
+* @karthikrameshdev @jobphone24

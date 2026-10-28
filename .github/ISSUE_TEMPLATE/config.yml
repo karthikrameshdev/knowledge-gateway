@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 GitHub Discussions
+    url: https://github.com/karthikrameshdev/knowledge-gateway/discussions
+    about: Ask questions, discuss ideas, or share community feedback.
+  - name: 🔒 Security Advisory
+    url: https://github.com/karthikrameshdev/knowledge-gateway/security/advisories/new
+    about: Report potential security vulnerabilities privately and responsibly.
