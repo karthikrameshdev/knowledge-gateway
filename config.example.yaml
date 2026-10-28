@@ -1,0 +1,66 @@
+gateway:
+  name: "Knowledge Gateway"
+  version: "1.0.0"
+  host: "0.0.0.0"
+  port: 8080
+  debug: true
+  pagination:
+    default_page_size: 5
+    max_page_size: 50
+  onnx_engine:
+    enabled: true
+    model_path: "models/reranker.onnx"
+    score_threshold: 0.15
+
+rag:
+  enabled: true
+  provider: "qdrant"
+  host: "localhost"
+  port: 6333
+  collection: "weftkit_knowledge_rag"
+  top_k: 8
+  embedding:
+    openai_url: "https://openrouter.ai/api/v1"
+    model_id: "openai/text-embedding-3-small"
+    api_key: "${OPENROUTER_API_KEY}"
+    dimension: 768
+
+okf:
+  enabled: true
+  root_dir: "data/okf"
+  deterministic_traversal: true
+  top_k: 8
+
+filesystem:
+  enabled: true
+  directories:
+    - path: "data/docs"
+      patterns: ["*.md", "*.txt", "*.json"]
+    - path: "data/specs"
+      patterns: ["*.md", "*.txt", "*.yaml"]
+  max_results: 8
+
+git:
+  enabled: true
+  repositories:
+    - name: "knowledge-gateway"
+      path: "."
+      branch: "main"
+      max_commits: 15
+      max_results: 6
+
+sql:
+  enabled: true
+  provider: "postgresql"
+  host: "localhost"
+  port: 5433
+  database: "weftkit_db"
+  username: "weftkit_admin"
+  password: "weftkit_secret"
+  timeout_seconds: 4.0
+  tables:
+    - table_name: "weftkit_knowledge"
+      search_columns: ["title", "content", "category", "tags"]
+    - table_name: "weftkit_configs"
+      search_columns: ["config_key", "config_value", "description", "scope"]
+  max_results: 8
