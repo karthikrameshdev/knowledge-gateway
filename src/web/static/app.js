@@ -1,3 +1,24 @@
+// Access tokens live only in this page's memory, never URLs or browser storage.
+let gatewayToken = '';
+const nativeFetch = window.fetch.bind(window);
+async function apiFetch(url, options = {}) {
+  const headers = new Headers(options.headers || {});
+  if (gatewayToken) headers.set('X-API-Key', gatewayToken);
+  const response = await nativeFetch(url, {...options, headers});
+  if (!response.ok) {
+    let message = `Request failed (${response.status})`;
+    try { const data = await response.json(); message = typeof data.detail === 'string' ? data.detail : message; } catch {}
+    throw new Error(message);
+  }
+  return response;
+}
+function setAccessToken() {
+  const value = window.prompt('Gateway API key (kept only until this page closes):');
+  if (value === null) return;
+  gatewayToken = value;
+  initSSE(); fetchActivityLogs(); fetchTopologyStatus(); updateCacheHeader();
+}
+
 // Knowledge Gateway UI Controller
 
 let eventSource = null;
@@ -19,7 +40,7 @@ document.addEventListener("DOMContentLoaded", () => {
 // Cache Header Stats
 async function updateCacheHeader() {
   try {
-    const res = await fetch("/api/v1/cache/stats");
+    const res = await apiFetch("/api/v1/cache/stats");
     const data = await res.json();
     const pill = document.getElementById("cacheBackendPill");
     if (pill) {
@@ -36,11 +57,11 @@ async function updateCacheHeader() {
 
 async function clearCacheFromUI() {
   try {
-    await fetch("/api/v1/cache/clear", { method: "POST" });
+    await apiFetch("/api/v1/cache/clear", { method: "POST" });
     await updateCacheHeader();
     await fetchActivityLogs();
   } catch (e) {
-    console.error("Failed to clear cache:", e);
+    document.getElementById('gatewayFeedback').textContent = e.message;
   }
 }
 
@@ -71,31 +92,31 @@ function switchTab(tabName) {
 }
 
 // Live Server-Sent Events (SSE) Tailing
-function initSSE() {
-  if (eventSource) {
-    eventSource.close();
-  }
-
+async function initSSE() {
+  if (eventSource) eventSource.close();
+  const controller = new AbortController();
+  eventSource = { close: () => controller.abort() };
   try {
-    eventSource = new EventSource("/api/v1/tail/stream");
-
-    eventSource.onmessage = (event) => {
-      if (!isTailingActive) return;
-      try {
-        const data = JSON.parse(event.data);
-        handleLiveTailEvent(data);
-      } catch (e) {
-        // Heartbeat or ping event
+    const response = await apiFetch('/api/v1/tail/stream', {signal: controller.signal});
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (isTailingActive && !controller.signal.aborted) {
+      const {value, done} = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, {stream: true});
+      const frames = buffer.split('\n\n');
+      buffer = frames.pop();
+      for (const frame of frames) {
+        if (frame.startsWith('data: ')) handleLiveTailEvent(JSON.parse(frame.slice(6)));
       }
-    };
-
-    eventSource.onerror = () => {
-      setTimeout(() => {
-        if (isTailingActive) initSSE();
-      }, 4000);
-    };
-  } catch (err) {
-    console.error("SSE connection error:", err);
+    }
+    await reader.cancel();
+  } catch (error) {
+    if (error.name !== 'AbortError') {
+      document.getElementById('gatewayFeedback').textContent = error.message;
+      if (isTailingActive && !controller.signal.aborted) setTimeout(initSSE, 4000);
+    }
   }
 }
 
@@ -121,6 +142,7 @@ function toggleTailing() {
 
 function handleLiveTailEvent(entry) {
   activityEntries.unshift(entry);
+  activityEntries = activityEntries.slice(0, 50);
   updateActivityBadge();
   updateCacheHeader();
 
@@ -151,7 +173,7 @@ async function fetchActivityLogs() {
   if (source) url += `&source=${encodeURIComponent(source)}`;
 
   try {
-    const res = await fetch(url);
+    const res = await apiFetch(url);
     const data = await res.json();
     activityEntries = data.entries || [];
     updateActivityBadge();
@@ -291,7 +313,7 @@ async function openInspector(requestId) {
   document.getElementById("inspectTimestamp").innerText = "Loading audit trace...";
 
   try {
-    const res = await fetch(`/api/v1/activity/${requestId}`);
+    const res = await apiFetch(`/api/v1/activity/${requestId}`);
     if (!res.ok) throw new Error("Activity not found");
     const detail = await res.json();
 
@@ -396,7 +418,7 @@ function getSourceTitle(key) {
     case "okf": return "OKF Knowledge Point";
     case "filesystem": return "Filesystem Docs";
     case "git": return "Git Repository";
-    case "sql": return "Relational SQL (Postgres / MySQL)";
+    case "sql": return "Relational SQL (PostgreSQL)";
     default: return key.toUpperCase();
   }
 }
@@ -443,6 +465,7 @@ async function executePlaygroundQuery() {
   const page = parseInt(document.getElementById("playgroundPage").value, 10) || 1;
   const pageSize = parseInt(document.getElementById("playgroundPageSize").value, 10) || 3;
   currentPlaygroundPage = page;
+  document.getElementById("gatewayFeedback").textContent = "";
 
   const execBtn = document.getElementById("executeBtn");
   execBtn.disabled = true;
@@ -450,7 +473,7 @@ async function executePlaygroundQuery() {
   if (window.lucide) window.lucide.createIcons();
 
   try {
-    const res = await fetch("/api/v1/query", {
+    const res = await apiFetch("/api/v1/query", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -464,9 +487,10 @@ async function executePlaygroundQuery() {
 
     const data = await res.json();
     renderPlaygroundResults(data);
+    if (data.degraded) document.getElementById('gatewayFeedback').textContent = 'Partial results: one or more sources timed out or failed. Inspect source status before relying on completeness.';
     updateCacheHeader();
   } catch (err) {
-    console.error("Playground query error:", err);
+    document.getElementById('gatewayFeedback').textContent = err.message;
   } finally {
     execBtn.disabled = false;
     execBtn.innerHTML = `<i data-lucide="sparkles" class="w-4 h-4"></i><span>Execute Knowledge Query</span>`;
@@ -537,7 +561,7 @@ function renderPlaygroundResults(data) {
             <h3 class="text-sm font-bold text-white">${escapeHtml(item.title)}</h3>
           </div>
           <div class="flex items-center space-x-2">
-            <span class="text-3xs font-mono text-slate-400">ONNX Score:</span>
+            <span class="text-3xs font-mono text-slate-400">Relevance score:</span>
             <span class="score-pill ${scoreClass}">${item.score.toFixed(3)}</span>
           </div>
         </div>
@@ -572,12 +596,12 @@ async function fetchTopologyStatus() {
   grid.innerHTML = `<div class="col-span-full py-8 text-center text-slate-500 font-mono">Checking connector states...</div>`;
 
   try {
-    const res = await fetch("/api/v1/sources/status");
+    const res = await apiFetch("/api/v1/sources/status");
     const data = await res.json();
     grid.innerHTML = "";
 
     for (const [key, info] of Object.entries(data)) {
-      const isHealthy = info.status === "healthy" || info.status === "active" || info.enabled === true;
+      const isHealthy = info.status === "healthy" || info.status === "active" || (info.enabled === true && info.redis_connected !== false);
       grid.innerHTML += `
         <div class="bg-slate-900/70 p-5 rounded-xl border ${isHealthy ? "border-slate-800" : "border-amber-500/30"} space-y-3">
           <div class="flex items-center justify-between">
@@ -590,13 +614,13 @@ async function fetchTopologyStatus() {
             </span>
           </div>
 
-          <pre class="bg-slate-950 p-3 rounded-lg text-3xs font-mono text-slate-300 overflow-x-auto max-h-36">${JSON.stringify(info, null, 2)}</pre>
+          <pre class="bg-slate-950 p-3 rounded-lg text-3xs font-mono text-slate-300 overflow-x-auto max-h-36">${escapeHtml(JSON.stringify(info, null, 2))}</pre>
         </div>
       `;
     }
     if (window.lucide) window.lucide.createIcons();
   } catch (err) {
-    grid.innerHTML = `<div class="col-span-full text-center text-rose-400">Error loading status: ${err.message}</div>`;
+    grid.innerHTML = `<div class="col-span-full text-center text-rose-400">Error loading status: ${escapeHtml(err.message)}</div>`;
   }
 }
 

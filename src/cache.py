@@ -3,6 +3,7 @@ import hashlib
 import json
 import logging
 import time
+from copy import deepcopy
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional
 
@@ -55,7 +56,7 @@ class InMemoryCache(BaseCache):
         self.evictions = 0
 
     async def get(self, key: str) -> Optional[Dict[str, Any]]:
-        now = time.time()
+        now = time.monotonic()
         async with self._lock:
             entry = self._store.get(key)
             if not entry:
@@ -72,10 +73,10 @@ class InMemoryCache(BaseCache):
             entry["last_accessed"] = now
             entry["access_count"] += 1
             self.hits += 1
-            return entry["val"]
+            return deepcopy(entry["val"])
 
     async def set(self, key: str, value: Dict[str, Any], ttl_seconds: Optional[int] = None) -> None:
-        now = time.time()
+        now = time.monotonic()
         ttl = ttl_seconds if ttl_seconds is not None else self.default_ttl
         expires_at = now + ttl if ttl > 0 else None
 
@@ -85,7 +86,7 @@ class InMemoryCache(BaseCache):
                 self._evict_one(now)
 
             self._store[key] = {
-                "val": value,
+                "val": deepcopy(value),
                 "expires_at": expires_at,
                 "created_at": now,
                 "last_accessed": now,
@@ -159,6 +160,9 @@ class RedisCache(BaseCache):
         self.hits = 0
         self.misses = 0
         self.prefix = self.redis_cfg.key_prefix
+        if not self.prefix or any(c in self.prefix for c in '*?[]'):
+            raise ValueError("Redis key_prefix must be nonempty and contain no glob characters")
+        self._retry_at = 0.0
         # In-memory fallback
         self.memory_fallback = InMemoryCache(
             max_entries=config.max_entries,
@@ -170,12 +174,17 @@ class RedisCache(BaseCache):
     def _init_redis(self):
         try:
             import redis.asyncio as aioredis
+            from redis.retry import Retry
+            from redis.backoff import NoBackoff
             self.client = aioredis.Redis(
                 host=self.redis_cfg.host,
                 port=self.redis_cfg.port,
                 db=self.redis_cfg.db,
                 password=self.redis_cfg.password or None,
                 socket_timeout=self.redis_cfg.timeout_seconds,
+                socket_connect_timeout=self.redis_cfg.timeout_seconds,
+                retry=Retry(NoBackoff(), 0),
+                max_connections=20,
                 decode_responses=True,
             )
             logger.info("Configured Redis cache connection to %s:%s (db: %s)", self.redis_cfg.host, self.redis_cfg.port, self.redis_cfg.db)
@@ -185,28 +194,28 @@ class RedisCache(BaseCache):
             self.is_connected = False
 
     async def _ensure_ping(self) -> bool:
-        if not self.client:
-            return False
-        try:
-            await self.client.ping()
-            self.is_connected = True
-            return True
-        except Exception:
-            self.is_connected = False
-            return False
+        # Real operations test connectivity. Avoid a PING round trip on every request.
+        return self.client is not None and time.monotonic() >= self._retry_at
+
+    def _failed(self):
+        self.is_connected = False
+        self._retry_at = time.monotonic() + self.redis_cfg.retry_interval_seconds
 
     async def get(self, key: str) -> Optional[Dict[str, Any]]:
         full_key = f"{self.prefix}{key}"
         if await self._ensure_ping():
             try:
                 raw = await self.client.get(full_key)
+                if not self.is_connected:
+                    await self.memory_fallback.clear()
+                self.is_connected = True
                 if raw:
                     self.hits += 1
                     return json.loads(raw)
                 self.misses += 1
                 return None
             except Exception as e:
-                logger.debug("Redis get error (%s). Falling back to memory.", e)
+                self._failed()
 
         # Fallback to in-memory
         res = await self.memory_fallback.get(key)
@@ -227,9 +236,13 @@ class RedisCache(BaseCache):
                     await self.client.set(full_key, payload, ex=ttl)
                 else:
                     await self.client.set(full_key, payload)
+                if not self.is_connected:
+                    await self.memory_fallback.clear()
+                self.is_connected = True
+                await self.memory_fallback.delete(key)
                 return
             except Exception as e:
-                logger.debug("Redis set error (%s). Storing in memory fallback.", e)
+                self._failed()
 
         # Fallback
         await self.memory_fallback.set(key, value, ttl_seconds=ttl)
@@ -247,14 +260,28 @@ class RedisCache(BaseCache):
         return deleted or mem_del
 
     async def clear(self) -> None:
-        if await self._ensure_ping():
-            try:
-                keys = await self.client.keys(f"{self.prefix}*")
-                if keys:
-                    await self.client.delete(*keys)
-            except Exception:
-                pass
         await self.memory_fallback.clear()
+        # A failed distributed invalidation must not be reported as success.
+        try:
+            if not self.client:
+                raise RuntimeError("Redis is unavailable")
+            batch = []
+            async for key in self.client.scan_iter(match=f"{self.prefix}*", count=100):
+                batch.append(key)
+                if len(batch) >= 100:
+                    await self.client.unlink(*batch)
+                    batch.clear()
+            if batch:
+                await self.client.unlink(*batch)
+            self.is_connected = True
+            self._retry_at = 0
+        except Exception as exc:
+            self._failed()
+            raise RuntimeError("Shared cache invalidation failed") from exc
+
+    async def aclose(self):
+        if self.client:
+            await self.client.aclose()
 
     def get_stats(self) -> Dict[str, Any]:
         total = self.hits + self.misses
@@ -275,16 +302,22 @@ class RedisCache(BaseCache):
 class GatewayCacheManager:
     """Manages query caching, cache key canonicalization, and response serialization."""
 
-    def __init__(self, config: CacheConfig):
+    def __init__(self, config: CacheConfig, scope: str = ''):
         self.config = config
+        self.scope = scope
         self.backend: BaseCache = self._create_backend()
+        self.generation = 0
+        self._mutation_lock = asyncio.Lock()
 
     def _create_backend(self) -> BaseCache:
         if not self.config.enabled:
             return InMemoryCache(max_entries=10, default_ttl=0)
 
         if self.config.backend.lower() == "redis":
-            return RedisCache(self.config)
+            # Clearing one dataset/configuration must not invalidate another sharing Redis.
+            suffix = hashlib.sha256((self.config.namespace + self.scope).encode()).hexdigest()[:24]
+            redis_cfg = self.config.redis.model_copy(update={"key_prefix": self.config.redis.key_prefix + suffix + ':'})
+            return RedisCache(self.config.model_copy(update={"redis": redis_cfg}))
         return InMemoryCache(
             max_entries=self.config.max_entries,
             default_ttl=self.config.ttl_seconds,
@@ -293,22 +326,14 @@ class GatewayCacheManager:
 
     def generate_cache_key(self, query_req: GatewayQuery) -> str:
         """Generates deterministic, collision-resistant canonical cache key."""
-        q_norm = query_req.query.lower().strip()
         tags_sorted = sorted([t.lower().strip() for t in query_req.tags])
         sources_sorted = sorted([s.lower().strip() for s in (query_req.sources or [])])
 
-        raw_key = (
-            f"q={q_norm}|"
-            f"tags={','.join(tags_sorted)}|"
-            f"sources={','.join(sources_sorted)}|"
-            f"page={query_req.page}|"
-            f"page_size={query_req.page_size}|"
-            f"min_score={query_req.min_score}"
-        )
-        h = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()[:24]
-        # Friendly preview prefix for debugging
-        preview = "".join(c if c.isalnum() else "_" for c in q_norm[:16])
-        return f"{preview}_{h}"
+        raw_key = json.dumps({"v": 2, "namespace": self.config.namespace, "scope": self.scope, "query": query_req.query, "tags": tags_sorted,
+                              "sources": sources_sorted, "page": query_req.page,
+                              "page_size": query_req.page_size, "min_score": query_req.min_score},
+                             sort_keys=True, separators=(',', ':'))
+        return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
 
     async def get_cached_response(self, query_req: GatewayQuery) -> Optional[GatewayResponse]:
         if not self.config.enabled:
@@ -322,6 +347,8 @@ class GatewayCacheManager:
         try:
             resp = GatewayResponse(**raw_val)
             resp.cached = True
+            resp.query = query_req.query
+            resp.tags = query_req.tags
             stats = self.backend.get_stats()
             resp.cache_backend = stats.get("backend", "cache")
             return resp
@@ -329,20 +356,32 @@ class GatewayCacheManager:
             logger.warning("Failed to deserialize cached response: %s", e)
             return None
 
-    async def cache_response(self, query_req: GatewayQuery, response: GatewayResponse) -> None:
+    async def cache_response(self, query_req: GatewayQuery, response: GatewayResponse, generation=None) -> None:
         if not self.config.enabled:
             return
 
         key = self.generate_cache_key(query_req)
         # Store serialized dict
         data = response.model_dump()
+        data["request_id"] = ""
         data["cached"] = True
         stats = self.backend.get_stats()
         data["cache_backend"] = stats.get("backend", "cache")
-        await self.backend.set(key, data, ttl_seconds=self.config.ttl_seconds)
+        if len(json.dumps(data).encode()) > self.config.max_value_bytes or response.degraded:
+            return
+        async with self._mutation_lock:
+            if generation is not None and generation != self.generation:
+                return
+            await self.backend.set(key, data, ttl_seconds=self.config.ttl_seconds)
 
     async def clear(self) -> None:
-        await self.backend.clear()
+        async with self._mutation_lock:
+            self.generation += 1
+            await self.backend.clear()
+
+    async def aclose(self):
+        if hasattr(self.backend, 'aclose'):
+            await self.backend.aclose()
 
     def get_stats(self) -> Dict[str, Any]:
         if not self.config.enabled:

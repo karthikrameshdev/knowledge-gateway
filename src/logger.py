@@ -12,7 +12,7 @@ logger = logging.getLogger("GatewayLogger")
 class ActivityLogger:
     """In-memory audit log and real-time Server-Sent Events (SSE) tailing broadcaster."""
 
-    def __init__(self, max_entries: int = 1000):
+    def __init__(self, max_entries: int = 200):
         self.max_entries = max_entries
         self._entries: deque[ActivityLogEntry] = deque(maxlen=max_entries)
         self._subscribers: Set[asyncio.Queue] = set()
@@ -20,6 +20,9 @@ class ActivityLogger:
 
     def record(self, entry: ActivityLogEntry) -> None:
         """Stores an activity entry and broadcasts it to live tailing subscribers."""
+        if entry.response_payload and len(json.dumps(entry.response_payload).encode()) > 262144:
+            entry.response_payload = None
+            entry.response_payload_truncated = True
         self._entries.appendleft(entry)
 
         # Broadcast to any active SSE subscribers
@@ -47,7 +50,12 @@ class ActivityLogger:
             try:
                 q.put_nowait(msg)
             except asyncio.QueueFull:
-                dead_queues.add(q)
+                # Drop the oldest notification; a slow client can recover via REST.
+                try:
+                    q.get_nowait()
+                    q.put_nowait(msg)
+                except (asyncio.QueueEmpty, asyncio.QueueFull):
+                    pass
             except Exception:
                 dead_queues.add(q)
 
@@ -97,8 +105,11 @@ class ActivityLogger:
             # Send initial ping event
             yield f": connected at {datetime.now(timezone.utc).isoformat()}\n\n"
             while True:
-                data = await q.get()
-                yield data
+                try:
+                    data = await asyncio.wait_for(q.get(), timeout=15)
+                    yield data
+                except asyncio.TimeoutError:
+                    yield ": heartbeat\n\n"
         finally:
             self._subscribers.discard(q)
 

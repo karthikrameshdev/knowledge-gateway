@@ -1,6 +1,7 @@
 import hashlib
 import math
 import logging
+from functools import lru_cache
 from pathlib import Path
 from typing import List, Tuple, Dict, Any, Optional
 import numpy as np
@@ -48,7 +49,9 @@ class ONNXConsolidatorEngine:
             self.session = None
             self.is_onnx_active = False
 
-    def _pseudo_vector(self, text: str, dim: int = 128) -> np.ndarray:
+    @staticmethod
+    @lru_cache(maxsize=2048)
+    def _pseudo_vector(text: str, dim: int = 128) -> np.ndarray:
         """Generates fast deterministic L2-normalized vector for semantic approximation."""
         vec = np.zeros(dim, dtype=np.float32)
         words = text.lower().split()
@@ -106,9 +109,10 @@ class ONNXConsolidatorEngine:
             title_match = 0.0
 
         # 3: Tag match
-        item_tags = [t.lower() for t in item.metadata.get("tags", [])]
-        if isinstance(item_tags, str):
-            item_tags = [item_tags]
+        raw_tags = item.metadata.get("tags", [])
+        if isinstance(raw_tags, str):
+            raw_tags = [raw_tags]
+        item_tags = [str(t).lower() for t in raw_tags or []]
         query_tags = [t.lower() for t in tags]
         all_query_tags = set(query_tags) | q_words
         if item_tags and all_query_tags:
@@ -215,9 +219,10 @@ class ONNXConsolidatorEngine:
         scored_items: List[GatewayKnowledgeItem] = []
 
         for item, score, f_dict in zip(unique_candidates, scores, feature_dicts):
-            final_score = round(float(score), 4)
-            item.onnx_score = final_score
-            item.score = final_score
+            if not math.isfinite(float(score)):
+                continue
+            final_score = round(max(0.0, min(1.0, float(score))), 4)
+            item = item.model_copy(update={"onnx_score": final_score, "score": final_score}, deep=True)
             accepted = final_score >= threshold
 
             traces.append(ActivityCandidateTrace(
@@ -234,8 +239,8 @@ class ONNXConsolidatorEngine:
                 scored_items.append(item)
 
         # Sort descending by ONNX score
-        scored_items.sort(key=lambda x: x.score, reverse=True)
-        traces.sort(key=lambda x: x.onnx_score, reverse=True)
+        scored_items.sort(key=lambda x: (-x.score, x.source_type, x.id))
+        traces.sort(key=lambda x: (-x.onnx_score, x.source_type, x.id))
 
         return scored_items, traces
 

@@ -1,14 +1,35 @@
-from typing import List, Dict, Any, Optional
-from pydantic import BaseModel, Field
+from typing import List, Dict, Any, Optional, Literal
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 
 class GatewayQuery(BaseModel):
-    query: str
-    tags: List[str] = Field(default_factory=list)
-    sources: Optional[List[str]] = None
-    page: int = Field(default=1, ge=1)
-    page_size: int = Field(default=5, ge=1, le=50)
-    min_score: float = Field(default=0.15, ge=0.0, le=1.0)
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    query: str = Field(min_length=1, max_length=8000)
+    tags: List[str] = Field(default_factory=list, max_length=32)
+    sources: Optional[List[Literal["rag", "okf", "filesystem", "git", "sql"]]] = Field(default=None, min_length=1, max_length=5)
+    page: int = Field(default=1, ge=1, strict=True)
+    page_size: int = Field(default=5, ge=1, le=50, strict=True)
+    min_score: float = Field(default=0.15, ge=0.0, le=1.0, strict=True)
+
+    @field_validator("query")
+    @classmethod
+    def clean_query(cls, value):
+        value = value.strip()
+        if not value:
+            raise ValueError("query must contain non-whitespace text")
+        return value
+
+    @field_validator("tags")
+    @classmethod
+    def clean_tags(cls, values):
+        if any(not v.strip() or len(v) > 128 for v in values):
+            raise ValueError("tags must contain 1–128 characters")
+        return sorted(set(v.strip().lower() for v in values))
+
+    @field_validator("sources")
+    @classmethod
+    def clean_sources(cls, values):
+        return sorted(set(values)) if values is not None else None
 
 
 class GatewayKnowledgeItem(BaseModel):
@@ -34,6 +55,9 @@ class SourceRetrievalStats(BaseModel):
 
 
 class GatewayResponse(BaseModel):
+    request_id: str = ""
+    degraded: bool = False
+    ranking_mode: str = "heuristic"
     query: str
     tags: List[str] = Field(default_factory=list)
     page: int
@@ -60,6 +84,7 @@ class ActivityCandidateTrace(BaseModel):
 
 
 class ActivityLogEntry(BaseModel):
+    response_payload_truncated: bool = False
     request_id: str
     timestamp: str
     client_ip: str = "127.0.0.1"

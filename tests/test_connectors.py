@@ -1,6 +1,6 @@
 import pytest
 from pathlib import Path
-from src.config import OKFConfig, FilesystemConfig, FilesystemDirectoryConfig, GitConfig, GitRepoConfig, RAGConfig
+from src.config import EmbeddingConfig, OKFConfig, FilesystemConfig, FilesystemDirectoryConfig, GitConfig, GitRepoConfig, RAGConfig
 from src.connectors.okf_connector import OKFConnector
 from src.connectors.fs_connector import FilesystemConnector
 from src.connectors.git_connector import GitConnector
@@ -63,6 +63,8 @@ async def test_rag_connector():
     config = RAGConfig(
         enabled=True,
         provider="qdrant",
+        mode="memory",
+        embedding=EmbeddingConfig(provider="deterministic"),
         host="localhost",
         port=6333,
         collection="test_unit_rag_col",

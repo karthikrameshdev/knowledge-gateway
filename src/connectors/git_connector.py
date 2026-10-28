@@ -23,11 +23,17 @@ class GitConnector(BaseConnector):
             return p
         return Path(__file__).resolve().parent.parent.parent / repo_path
 
-    async def search(
+    async def search(self, query, tags, top_k=None):
+        return await self.run_blocking(self._search_sync, query, tags, top_k)
+
+    async def health_check(self):
+        return await self.run_blocking(self._health_sync)
+
+    def _search_sync(
         self,
         query: str,
         tags: List[str],
-        top_k: int = 5,
+        top_k: int = None,
     ) -> List[GatewayKnowledgeItem]:
         if not self.enabled or not self.config.repositories:
             return []
@@ -44,14 +50,13 @@ class GitConnector(BaseConnector):
             # 1. Search git commit logs
             try:
                 cmd = [
-                    "git", "log",
-                    f"-n {repo_cfg.max_commits}",
+                    "git", "log", "-n", str(repo_cfg.max_commits),
                     "--pretty=format:%H%x1f%an%x1f%ae%x1f%ad%x1f%s%x1f%b%x1e",
                     "--date=iso",
+                    "--end-of-options", repo_cfg.branch, "--",
                 ]
                 res = subprocess.run(
-                    " ".join(cmd),
-                    shell=True,
+                    cmd,
                     cwd=str(repo_dir),
                     capture_output=True,
                     text=True,
@@ -77,7 +82,7 @@ class GitConnector(BaseConnector):
                             if hits > 0 or (q_clean and q_clean in full_commit_text):
                                 score = min(0.95, 0.4 + 0.2 * hits)
                                 items.append(GatewayKnowledgeItem(
-                                    id=f"git_commit_{commit_hash[:8]}",
+                                    id=f"git_commit_{repo_cfg.name}_{commit_hash}",
                                     source_type="git",
                                     title=f"Git Commit: {subject}",
                                     content=f"Commit: {commit_hash}\nAuthor: {author_name} <{author_email}>\nDate: {commit_date}\n\nSubject: {subject}\n\n{body}",
@@ -96,13 +101,15 @@ class GitConnector(BaseConnector):
                                         "tags": ["git", "vcs", "commit"],
                                     },
                                 ))
-            except Exception as e:
-                logger.debug("Git log search failed: %s", e)
+                if res.returncode != 0:
+                    raise RuntimeError("Configured Git revision is unavailable")
+            except Exception:
+                raise
 
             # 2. Search git tracked files
             try:
                 res_files = subprocess.run(
-                    ["git", "ls-files"],
+                    ["git", "ls-tree", "-r", "--name-only", repo_cfg.branch, "--"],
                     cwd=str(repo_dir),
                     capture_output=True,
                     text=True,
@@ -113,7 +120,7 @@ class GitConnector(BaseConnector):
                         f_clean = f.lower()
                         if any(w in f_clean for w in q_words) and not f.startswith("."):
                             items.append(GatewayKnowledgeItem(
-                                id=f"git_file_{f}",
+                                id=f"git_file_{repo_cfg.name}_{f}",
                                 source_type="git",
                                 title=f"Tracked File: {f}",
                                 content=f"Repository Tracked File: {f}\nRepo: {repo_cfg.name}\nBranch: {repo_cfg.branch}",
@@ -130,14 +137,16 @@ class GitConnector(BaseConnector):
                                     "tags": ["git", "file"],
                                 },
                             ))
-            except Exception as e:
-                logger.debug("Git file list failed: %s", e)
+                if res_files.returncode != 0:
+                    raise RuntimeError("Configured Git tree is unavailable")
+            except Exception:
+                raise
 
-        items.sort(key=lambda x: x.raw_score, reverse=True)
-        limit = min(top_k or 5, 20)
+        items.sort(key=lambda x: (-x.raw_score, x.id))
+        limit = min(top_k or sum(r.max_results for r in self.config.repositories), 100)
         return items[:limit]
 
-    async def health_check(self) -> Dict[str, Any]:
+    def _health_sync(self) -> Dict[str, Any]:
         if not self.enabled:
             return {"status": "disabled", "connector": self.name}
 
@@ -146,12 +155,15 @@ class GitConnector(BaseConnector):
             repo_dir = self._resolve_repo(repo_cfg.path)
             if (repo_dir / ".git").exists():
                 res = subprocess.run(
-                    ["git", "rev-parse", "--short", "HEAD"],
+                    ["git", "rev-parse", "--verify", repo_cfg.branch],
                     cwd=str(repo_dir),
                     capture_output=True,
                     text=True,
+                    timeout=3.0,
                 )
-                head = res.stdout.strip() if res.returncode == 0 else "unknown"
+                if res.returncode != 0:
+                    continue
+                head = res.stdout.strip()
                 repo_statuses.append({
                     "name": repo_cfg.name,
                     "path": str(repo_dir),

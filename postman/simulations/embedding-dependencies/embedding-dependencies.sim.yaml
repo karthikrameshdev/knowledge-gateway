@@ -1,0 +1,23 @@
+simulation: embedding-dependencies
+routing: path
+mocks:
+  - name: embeddings
+    routeKey: embeddings
+    path: postman/mocks/embeddings
+  - name: embedding-json-error
+    routeKey: json-error
+    path: postman/mocks/embeddings
+    scenarios:
+      - overrides:
+          conditions:
+            error: {status_code: 503}
+  - name: embedding-timeout
+    routeKey: timeout
+    path: postman/mocks/embeddings
+    scenarios:
+      - overrides:
+          conditions:
+            latency: {delay_ms: 300}
+  - name: embedding-html-error
+    routeKey: html-error
+    path: postman/mocks/embedding-html
